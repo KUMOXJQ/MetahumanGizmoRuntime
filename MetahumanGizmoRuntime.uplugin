@@ -1,0 +1,51 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0.0",
+	"FriendlyName": "Metahuman Gizmo Runtime",
+	"Description": "Facial gizmo spheres aligned with MetaHuman Creator (Evaluate + EvaluateGizmos). Add UMetahumanFaceGizmoComponent, set face DNA and MHC paths. Full evaluation links MetaHumanCoreTechLib on Editor targets only; precompiled UnrealGame builds use a stub (see README). Author: XujiaqiKumo.",
+	"Category": "MetaHuman",
+	"CreatedBy": "XujiaqiKumo",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"EnabledByDefault": false,
+	"SupportedTargetPlatforms": [
+		"Win64",
+		"Linux"
+	],
+	"Modules": [
+		{
+			"Name": "MetahumanGizmoRuntime",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Linux"
+			]
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "MetaHumanCoreTech",
+			"Enabled": true
+		},
+		{
+			"Name": "MetaHumanSDK",
+			"Enabled": true
+		},
+		{
+			"Name": "MetaHumanCharacter",
+			"Enabled": true
+		},
+		{
+			"Name": "RigLogic",
+			"Enabled": true
+		}
+	]
+}

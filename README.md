@@ -1,0 +1,59 @@
+# MetahumanGizmoRuntime
+
+**作者：** XujiaqiKumo  
+
+在场景中附加 **`UMetahumanFaceGizmoComponent`**，用与 MetaHuman Creator 相同的逻辑（`Evaluate` → `EvaluateGizmos`）在脸部附近显示 Gizmo 小球，**不依赖** `MetaHumanCharacterEditor` / Slate 做核心计算。
+
+## 依赖插件（uplugin 已声明）
+
+- `MetaHumanCoreTech`、`MetaHumanSDK`、`MetaHumanCharacter`、`RigLogic`
+
+## 使用要点
+
+1. 在工程中启用本插件。
+2. 在角色 Actor 上添加 **`UMetahumanFaceGizmoComponent`**。
+3. 指定 **`FaceMeshComponent`**（脸部 `USkeletalMeshComponent`）、**`FaceDNAAsset`**、**`FaceMHCDataPath`** / **`BodyMHCDataPath`**（与 Creator / 项目管线一致的路径）。
+4. 可选：设置 **`SourceMetaHumanCharacter`**，从 `GetFaceStateData()` 反序列化面部状态以对齐已保存角色。
+5. 调用 **`InitializeIdentity`**（或在 **`bAutoInitializeOnBeginPlay`** 为 true 时自动调用），再按需 **`RefreshGizmoTransforms`**；若 **`bTickRefreshEveryFrame`** 为 true，则每帧刷新。
+
+## Editor 与 Game 编译差异（重要）
+
+Epic **预编译引擎**下，`MetaHumanCoreTechLib` 通常**没有** UnrealGame 的预编译清单。本模块在 **Build.cs** 中仅在 **`Target.Type == Editor`** 时链接 `MetaHumanCoreTechLib` 并定义 **`WITH_METAHUMAN_GIZMO_RUNTIME_EVAL=1`**：
+
+- **Editor / PIE：** 完整实现，`InitializeIdentity` / `RefreshGizmoTransforms` 可用。
+- **Game / Shipping（预编译引擎）：** 占位实现，`InitializeIdentity` 会记录警告并返回 `false`；若需在正式游戏中使用完整 Evaluate，需 **从源码编译引擎** 并自行将 `MetaHumanCoreTechLib` 纳入 Game 目标（非标准流程，需自行验证）。
+
+## 文档
+
+- 架构与阶段说明：[`MetaHuman_Runtime面部Gizmo开发计划.md`](./MetaHuman_Runtime面部Gizmo开发计划.md)
+
+## 源码布局
+
+```text
+Source/MetahumanGizmoRuntime/
+├── MetahumanGizmoRuntime.Build.cs
+├── Public/
+│   ├── MetahumanGizmoRuntime.h
+│   └── MetahumanFaceGizmoComponent.h
+└── Private/
+    ├── MetahumanGizmoRuntime.cpp
+    └── MetahumanFaceGizmoComponent.cpp
+```
+
+## 调试（Output Log）
+
+- **日志分类**：`LogMetahumanGizmoRuntime`（定义于 `MetahumanGizmoRuntime.cpp`）。
+- **在编辑器中**：菜单 **窗口 → 开发者工具 → 输出日志**，搜索 **`[MetahumanGizmo]`**（每条关键日志均带此前缀）。
+- **成功链**（PIE / 播放时）应大致出现：`BeginPlay` → `InitializeIdentity: start` → `Paths`（含磁盘是否存在）→ `CreateState OK | NumGizmos=…` → `InitializeIdentity: SUCCESS` → `RefreshGizmoTransforms: Evaluate verts=…` → `First gizmo world pos=…` → `RefreshGizmoTransforms: DONE`。
+- **若 Init 失败**：同窗口搜索 **`LogMetaHumanCoreTechLib`** 或 **`failed to initialize MHC API`**，并核对 **Face/Body MHC 路径**是否为**磁盘上真实存在的目录**（与引擎 `MetaHumanCharacter/Content/.../IdentityTemplate` 结构一致，勿只填自定义 DNA 目录）。
+- **更细**：按 **~** 打开控制台，输入 `Log LogMetahumanGizmoRuntime Verbose` 后再 PIE，可看到 `FaceMeshComponent` 位置等 Verbose 行。
+
+## 验证构建
+
+在引擎外目录执行（输出路径须在 Engine 之外）：
+
+```bat
+Engine\Build\BatchFiles\RunUAT.bat BuildPlugin -Plugin="...\MetahumanGizmoRuntime.uplugin" -Package="C:\Temp\MetahumanGizmoOut" -TargetPlatforms=Win64 -Rocket
+```
+
+应同时通过 **UnrealEditor** 与 **UnrealGame**（Development / Shipping）编译。

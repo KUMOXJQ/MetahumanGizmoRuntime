@@ -1,0 +1,34 @@
+# Unreal Engine — plugin working copy
+Binaries/
+Intermediate/
+DerivedDataCache/
+Saved/
+Build/
+.vs/
+.vscode/
+*.sln
+*.suo
+*.xcodeproj
+*.xcworkspace
+*.VC.db
+*.opensdf
+*.sdf
+*.opendb
+*.pdb
+*.obj
+*.pch
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+*.app
+*.user
+*.userosscache
+*.sln.docstates
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
