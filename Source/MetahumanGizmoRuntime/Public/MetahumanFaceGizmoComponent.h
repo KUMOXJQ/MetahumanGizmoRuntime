@@ -51,11 +51,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
 	TObjectPtr<UDNAAsset> FaceDNAAsset = nullptr;
 
-	/** Absolute or project-relative path to MetaHuman Creator face MHC data (directory containing Titan assets). */
+	/**
+	 * If true and Face/Body MHC path strings are empty, fill them from MetaHumanCharacter plugin Content:
+	 * Face/IdentityTemplate and Body/IdentityTemplate (same disk layout as GetFaceIdentityTemplateModelPath).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
+	bool bUsePluginDefaultMHCPaths = true;
+
+	/** Absolute or project-relative path to MetaHuman Creator face MHC data (directory containing Titan assets). If empty and bUsePluginDefaultMHCPaths, filled from plugin. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
 	FString FaceMHCDataPath;
 
-	/** Body MHC data path (paired with face; same as editor GetOrCreateCharacterIdentity). */
+	/** Body MHC data path. If empty and bUsePluginDefaultMHCPaths, filled from plugin. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
 	FString BodyMHCDataPath;
 
@@ -87,6 +94,13 @@ public:
 	/** Recompute Evaluate + EvaluateGizmos and update sphere transforms. */
 	UFUNCTION(BlueprintCallable, Category = "MetaHuman|Gizmo")
 	bool RefreshGizmoTransforms();
+
+	/**
+	 * Tear down MHC glue and run InitializeIdentity again. Call after SourceMetaHumanCharacter or face DNA change;
+	 * RefreshGizmoTransforms alone is not enough.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "MetaHuman|Gizmo")
+	bool ReinitializeIdentity();
 
 	UFUNCTION(BlueprintPure, Category = "MetaHuman|Gizmo")
 	bool IsIdentityInitialized() const { return bIdentityInitialized; }

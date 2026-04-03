@@ -28,6 +28,7 @@
 
 #if WITH_METAHUMAN_GIZMO_RUNTIME_EVAL
 #include "HAL/PlatformFileManager.h"
+#include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
 #endif
 
@@ -51,6 +52,45 @@ static void DeleteImpl(void*& ImplPtr)
 	delete static_cast<FMetahumanFaceGizmoComponentImpl*>(ImplPtr);
 	ImplPtr = nullptr;
 }
+
+#if WITH_METAHUMAN_GIZMO_RUNTIME_EVAL
+/** When bUsePluginDefault is true, fill empty InOutFace/InOutBody from MetaHumanCharacter plugin Content (IdentityTemplate dirs). */
+static void ApplyPluginDefaultMHCPathsIfNeeded(const bool bUsePluginDefault, FString& InOutFace, FString& InOutBody)
+{
+	if (!bUsePluginDefault)
+	{
+		return;
+	}
+
+	TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("MetaHumanCharacter"));
+	if (!Plugin.IsValid())
+	{
+		UE_LOG(LogMetahumanGizmoRuntime, Warning,
+			TEXT("[MetahumanGizmo] bUsePluginDefaultMHCPaths: MetaHumanCharacter plugin not found — Face/Body paths unchanged."));
+		return;
+	}
+
+	const FString ContentDir = FPaths::ConvertRelativePathToFull(Plugin->GetContentDir());
+	bool bFilled = false;
+	if (InOutFace.IsEmpty())
+	{
+		InOutFace = ContentDir / TEXT("Face/IdentityTemplate");
+		bFilled = true;
+	}
+	if (InOutBody.IsEmpty())
+	{
+		InOutBody = ContentDir / TEXT("Body/IdentityTemplate");
+		bFilled = true;
+	}
+	if (bFilled)
+	{
+		UE_LOG(LogMetahumanGizmoRuntime, Log,
+			TEXT("[MetahumanGizmo] Applied plugin default MHC paths (empty slots only) | Face=%s | Body=%s"),
+			*InOutFace,
+			*InOutBody);
+	}
+}
+#endif
 
 UMetahumanFaceGizmoComponent::UMetahumanFaceGizmoComponent()
 {
@@ -190,15 +230,20 @@ bool UMetahumanFaceGizmoComponent::InitializeIdentity()
 			TEXT("[MetahumanGizmo] InitializeIdentity: FAIL — no face UDNAAsset (explicit property empty and none on face SKM). See earlier [MetahumanGizmo] Face DNA logs."));
 		return false;
 	}
-	if (FaceMHCDataPath.IsEmpty() || BodyMHCDataPath.IsEmpty())
+
+	FString FacePath = FaceMHCDataPath;
+	FString BodyPath = BodyMHCDataPath;
+	ApplyPluginDefaultMHCPathsIfNeeded(bUsePluginDefaultMHCPaths, FacePath, BodyPath);
+	if (FacePath.IsEmpty() || BodyPath.IsEmpty())
 	{
-		UE_LOG(LogMetahumanGizmoRuntime, Warning, TEXT("[MetahumanGizmo] InitializeIdentity: FAIL — FaceMHCDataPath or BodyMHCDataPath is empty."));
+		UE_LOG(LogMetahumanGizmoRuntime, Warning,
+			TEXT("[MetahumanGizmo] InitializeIdentity: FAIL — Face or Body MHC path still empty after optional plugin defaults (set paths or enable bUsePluginDefaultMHCPaths with MetaHumanCharacter plugin)."));
 		return false;
 	}
 
 	{
-		const FString FaceAbs = FPaths::ConvertRelativePathToFull(FaceMHCDataPath);
-		const FString BodyAbs = FPaths::ConvertRelativePathToFull(BodyMHCDataPath);
+		const FString FaceAbs = FPaths::ConvertRelativePathToFull(FacePath);
+		const FString BodyAbs = FPaths::ConvertRelativePathToFull(BodyPath);
 		const bool bFaceDir = FPlatformFileManager::Get().GetPlatformFile().DirectoryExists(*FaceAbs);
 		const bool bBodyDir = FPlatformFileManager::Get().GetPlatformFile().DirectoryExists(*BodyAbs);
 		UE_LOG(LogMetahumanGizmoRuntime, Log,
@@ -231,7 +276,7 @@ bool UMetahumanFaceGizmoComponent::InitializeIdentity()
 		TEXT("[MetahumanGizmo] Calling FMetaHumanCharacterIdentity::Init | DNAOrientation=%s"),
 		DNAOrientationIndex != 0 ? TEXT("Z_UP") : TEXT("Y_UP"));
 
-	if (!Impl->Identity->Init(FaceMHCDataPath, BodyMHCDataPath, ResolvedFaceDNA, Orient))
+	if (!Impl->Identity->Init(FacePath, BodyPath, ResolvedFaceDNA, Orient))
 	{
 		UE_LOG(LogMetahumanGizmoRuntime, Error,
 			TEXT("[MetahumanGizmo] InitializeIdentity: FAIL — FMetaHumanCharacterIdentity::Init returned false. Also search Output Log for LogMetaHumanCoreTechLib / \"failed to initialize MHC API\"."));
@@ -372,6 +417,22 @@ bool UMetahumanFaceGizmoComponent::RefreshGizmoTransforms()
 	UE_LOG(LogMetahumanGizmoRuntime, Verbose, TEXT("[MetahumanGizmo] RefreshGizmoTransforms: no-op (EVAL=0)."));
 	return false;
 #endif
+}
+
+bool UMetahumanFaceGizmoComponent::ReinitializeIdentity()
+{
+	ReleaseGizmoSpheres();
+	DeleteImpl(ImplPtr);
+	bIdentityInitialized = false;
+
+	const bool bOk = InitializeIdentity();
+#if WITH_METAHUMAN_GIZMO_RUNTIME_EVAL
+	if (bOk)
+	{
+		(void)RefreshGizmoTransforms();
+	}
+#endif
+	return bOk;
 }
 
 int32 UMetahumanFaceGizmoComponent::GetNumGizmos() const

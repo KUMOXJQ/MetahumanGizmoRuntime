@@ -12,9 +12,9 @@
 
 1. 在工程中启用本插件。
 2. 在角色 Actor 上添加 **`UMetahumanFaceGizmoComponent`**。
-3. 指定 **`FaceMeshComponent`**（脸部 `USkeletalMeshComponent`）、**`FaceDNAAsset`**、**`FaceMHCDataPath`** / **`BodyMHCDataPath`**（与 Creator / 项目管线一致的路径）。
+3. 指定 **`FaceMeshComponent`**（脸部 `USkeletalMeshComponent`）；**`FaceDNAAsset`** 可选（未设则从脸 SKM 的 Asset User Data 解析 `UDNAAsset`，与编辑器 `GetDNAReader` 同源）。**`FaceMHCDataPath`** / **`BodyMHCDataPath`** 可与 Creator 一致的手填路径；若 **`bUsePluginDefaultMHCPaths`** 为 true，空字符串会自动填为 `MetaHumanCharacter` 插件 Content 下的 `Face/IdentityTemplate` 与 `Body/IdentityTemplate`。
 4. 可选：设置 **`SourceMetaHumanCharacter`**，从 `GetFaceStateData()` 反序列化面部状态以对齐已保存角色。
-5. 调用 **`InitializeIdentity`**（或在 **`bAutoInitializeOnBeginPlay`** 为 true 时自动调用），再按需 **`RefreshGizmoTransforms`**；若 **`bTickRefreshEveryFrame`** 为 true，则每帧刷新。
+5. 调用 **`InitializeIdentity`**（或在 **`bAutoInitializeOnBeginPlay`** 为 true 时自动调用），再按需 **`RefreshGizmoTransforms`**；若 **`bTickRefreshEveryFrame`** 为 true，则每帧刷新。更换 **`SourceMetaHumanCharacter`** 或面部 DNA 后须调用 **`ReinitializeIdentity`**（不可仅 Refresh）。
 
 ## Editor 与 Game 编译差异（重要）
 
@@ -25,6 +25,7 @@ Epic **预编译引擎**下，`MetaHumanCoreTechLib` 通常**没有** UnrealGame
 
 ## 文档
 
+- 与官方子系统对齐的分阶段实现计划：[`docs/IMPLEMENTATION_PLAN_MetaHuman_Alignment.md`](./docs/IMPLEMENTATION_PLAN_MetaHuman_Alignment.md)
 - 架构与阶段说明：[`MetaHuman_Runtime面部Gizmo开发计划.md`](./MetaHuman_Runtime面部Gizmo开发计划.md)
 
 ## 源码布局

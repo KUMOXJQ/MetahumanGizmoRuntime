@@ -34,6 +34,7 @@ public class MetahumanGizmoRuntime : ModuleRules
 		{
 			"MetaHumanCharacter",
 			"MetaHumanSDKRuntime",
+			"Projects",
 			"RigLogicModule",
 		});
 	}
