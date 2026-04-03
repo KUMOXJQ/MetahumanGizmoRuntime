@@ -43,7 +43,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
 	TObjectPtr<USkeletalMeshComponent> FaceMeshComponent = nullptr;
 
-	/** Face DNA used by FMetaHumanCharacterIdentity::Init (same as Creator pipeline). */
+	/**
+	 * Face DNA for FMetaHumanCharacterIdentity::Init. Optional when Face Mesh Component is set and its
+	 * USkeletalMesh has UDNAAsset as Asset User Data (same source as editor GetDNAReader on the face SKM).
+	 * If null, InitializeIdentity resolves DNA from FaceMeshComponent->GetSkeletalMeshAsset().
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
 	TObjectPtr<UDNAAsset> FaceDNAAsset = nullptr;
 
@@ -95,6 +99,9 @@ protected:
 	void EnsureSphereCount(int32 Count);
 
 private:
+	/** Prefer FaceDNAAsset; else UDNAAsset from FaceMeshComponent's skeletal mesh Asset User Data. */
+	UDNAAsset* ResolveFaceDNAForInit() const;
+
 	/** Opaque impl (cpp-only); void* avoids UHT + incomplete TUniquePtr destructor issues. */
 	void* ImplPtr = nullptr;
 

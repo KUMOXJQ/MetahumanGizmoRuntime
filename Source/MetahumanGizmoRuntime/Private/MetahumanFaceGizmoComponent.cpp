@@ -22,6 +22,7 @@
 
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "GameFramework/Actor.h"
 
@@ -112,14 +113,81 @@ void UMetahumanFaceGizmoComponent::TickComponent(float DeltaTime, ELevelTick Tic
 	}
 }
 
+UDNAAsset* UMetahumanFaceGizmoComponent::ResolveFaceDNAForInit() const
+{
+#if WITH_METAHUMAN_GIZMO_RUNTIME_EVAL
+	if (IsValid(FaceDNAAsset))
+	{
+		UE_LOG(LogMetahumanGizmoRuntime, Log,
+			TEXT("[MetahumanGizmo] Face DNA: using explicit FaceDNAAsset '%s'."),
+			*FaceDNAAsset->GetName());
+		return FaceDNAAsset;
+	}
+
+	UE_LOG(LogMetahumanGizmoRuntime, Log,
+		TEXT("[MetahumanGizmo] Face DNA: FaceDNAAsset unset — trying UDNAAsset from FaceMeshComponent SkeletalMesh (Asset User Data, same as editor GetDNAReader)."));
+
+	if (!IsValid(FaceMeshComponent))
+	{
+		UE_LOG(LogMetahumanGizmoRuntime, Warning,
+			TEXT("[MetahumanGizmo] Face DNA: FAIL — FaceMeshComponent is null. Assign Face Mesh Component or set Face DNA Asset explicitly."));
+		return nullptr;
+	}
+
+	USkeletalMesh* SkelMesh = FaceMeshComponent->GetSkeletalMeshAsset();
+	if (!IsValid(SkelMesh))
+	{
+		UE_LOG(LogMetahumanGizmoRuntime, Warning,
+			TEXT("[MetahumanGizmo] Face DNA: FAIL — FaceMeshComponent '%s' has no skeletal mesh (GetSkeletalMeshAsset() null)."),
+			*FaceMeshComponent->GetName());
+		return nullptr;
+	}
+
+	const FString MeshPackageName = SkelMesh->GetOutermost() ? SkelMesh->GetOutermost()->GetName() : FString();
+	UE_LOG(LogMetahumanGizmoRuntime, Log,
+		TEXT("[MetahumanGizmo] Face DNA: inspecting SkeletalMesh asset '%s' | package: %s"),
+		*SkelMesh->GetName(),
+		*MeshPackageName);
+
+	UAssetUserData* UserData = SkelMesh->GetAssetUserDataOfClass(UDNAAsset::StaticClass());
+	if (!UserData)
+	{
+		UE_LOG(LogMetahumanGizmoRuntime, Warning,
+			TEXT("[MetahumanGizmo] Face DNA: FAIL — SkeletalMesh '%s' has no UDNAAsset Asset User Data. ")
+			TEXT("MetaHuman face SKM normally stores DNA here; re-import or assign DNA on the mesh, or set Face DNA Asset on this component."),
+			*SkelMesh->GetName());
+		return nullptr;
+	}
+
+	UDNAAsset* const FromMesh = Cast<UDNAAsset>(UserData);
+	if (!IsValid(FromMesh))
+	{
+		UE_LOG(LogMetahumanGizmoRuntime, Error,
+			TEXT("[MetahumanGizmo] Face DNA: FAIL — Asset User Data class UDNAAsset mismatch on '%s'."),
+			*SkelMesh->GetName());
+		return nullptr;
+	}
+
+	UE_LOG(LogMetahumanGizmoRuntime, Log,
+		TEXT("[MetahumanGizmo] Face DNA: OK — UDNAAsset '%s' from SkeletalMesh '%s'."),
+		*FromMesh->GetName(),
+		*SkelMesh->GetName());
+	return FromMesh;
+#else
+	return nullptr;
+#endif
+}
+
 bool UMetahumanFaceGizmoComponent::InitializeIdentity()
 {
 #if WITH_METAHUMAN_GIZMO_RUNTIME_EVAL
 	UE_LOG(LogMetahumanGizmoRuntime, Log, TEXT("[MetahumanGizmo] InitializeIdentity: start"));
 
-	if (!FaceDNAAsset)
+	UDNAAsset* const ResolvedFaceDNA = ResolveFaceDNAForInit();
+	if (!IsValid(ResolvedFaceDNA))
 	{
-		UE_LOG(LogMetahumanGizmoRuntime, Warning, TEXT("[MetahumanGizmo] InitializeIdentity: FAIL — FaceDNAAsset is null (set Face DNA in details)."));
+		UE_LOG(LogMetahumanGizmoRuntime, Warning,
+			TEXT("[MetahumanGizmo] InitializeIdentity: FAIL — no face UDNAAsset (explicit property empty and none on face SKM). See earlier [MetahumanGizmo] Face DNA logs."));
 		return false;
 	}
 	if (FaceMHCDataPath.IsEmpty() || BodyMHCDataPath.IsEmpty())
@@ -135,7 +203,7 @@ bool UMetahumanFaceGizmoComponent::InitializeIdentity()
 		const bool bBodyDir = FPlatformFileManager::Get().GetPlatformFile().DirectoryExists(*BodyAbs);
 		UE_LOG(LogMetahumanGizmoRuntime, Log,
 			TEXT("[MetahumanGizmo] Paths | FaceDNA=%s | FaceMHC exists=%s | %s | BodyMHC exists=%s | %s"),
-			*FaceDNAAsset->GetName(),
+			*ResolvedFaceDNA->GetName(),
 			bFaceDir ? TEXT("yes") : TEXT("NO"),
 			*FaceAbs,
 			bBodyDir ? TEXT("yes") : TEXT("NO"),
@@ -163,7 +231,7 @@ bool UMetahumanFaceGizmoComponent::InitializeIdentity()
 		TEXT("[MetahumanGizmo] Calling FMetaHumanCharacterIdentity::Init | DNAOrientation=%s"),
 		DNAOrientationIndex != 0 ? TEXT("Z_UP") : TEXT("Y_UP"));
 
-	if (!Impl->Identity->Init(FaceMHCDataPath, BodyMHCDataPath, FaceDNAAsset, Orient))
+	if (!Impl->Identity->Init(FaceMHCDataPath, BodyMHCDataPath, ResolvedFaceDNA, Orient))
 	{
 		UE_LOG(LogMetahumanGizmoRuntime, Error,
 			TEXT("[MetahumanGizmo] InitializeIdentity: FAIL — FMetaHumanCharacterIdentity::Init returned false. Also search Output Log for LogMetaHumanCoreTechLib / \"failed to initialize MHC API\"."));
