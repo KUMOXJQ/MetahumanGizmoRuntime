@@ -108,16 +108,16 @@ void UMetahumanFaceGizmoComponent::BeginPlay()
 	Super::BeginPlay();
 
 	const AActor* Owner = GetOwner();
+#if WITH_METAHUMAN_GIZMO_RUNTIME_EVAL
+	const TCHAR* const EvalModeStr = TEXT("1(Editor/CoreTech)");
+#else
+	const TCHAR* const EvalModeStr = TEXT("0(GameStub)");
+#endif
 	UE_LOG(LogMetahumanGizmoRuntime, Log,
 		TEXT("[MetahumanGizmo] BeginPlay | Actor=%s | AutoInit=%s | EVAL=%s"),
 		Owner ? *Owner->GetName() : TEXT("(null)"),
 		bAutoInitializeOnBeginPlay ? TEXT("true") : TEXT("false"),
-#if WITH_METAHUMAN_GIZMO_RUNTIME_EVAL
-		TEXT("1(Editor/CoreTech)")
-#else
-		TEXT("0(GameStub)")
-#endif
-	);
+		EvalModeStr);
 
 	if (bAutoInitializeOnBeginPlay)
 	{
