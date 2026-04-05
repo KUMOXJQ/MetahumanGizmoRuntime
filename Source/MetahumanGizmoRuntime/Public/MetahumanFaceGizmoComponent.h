@@ -44,12 +44,19 @@ public:
 	TObjectPtr<USkeletalMeshComponent> FaceMeshComponent = nullptr;
 
 	/**
-	 * Face DNA for FMetaHumanCharacterIdentity::Init. Optional when Face Mesh Component is set and its
-	 * USkeletalMesh has UDNAAsset as Asset User Data (same source as editor GetDNAReader on the face SKM).
-	 * If null, InitializeIdentity resolves DNA from FaceMeshComponent->GetSkeletalMeshAsset().
+	 * Face DNA for FMetaHumanCharacterIdentity::Init when bUsePluginArchetypeFaceDNAForIdentity is false.
+	 * Optional when Face Mesh Component is set and its USkeletalMesh has UDNAAsset as Asset User Data.
+	 * When bUsePluginArchetypeFaceDNAForIdentity is true (default), Init uses plugin SKM_Face.dna instead (same as editor GetArchetypeDNAAseet(Face)) to match IdentityTemplate and avoid PatchBlendModel::Reduce crashes.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
 	TObjectPtr<UDNAAsset> FaceDNAAsset = nullptr;
+
+	/**
+	 * If true (default), load MetaHumanCoreTech Content/ArchetypeDNA/SKM_Face.dna for Identity::Init — aligned with UMetaHumanCharacterEditorSubsystem::GetOrCreateCharacterIdentity.
+	 * Set false to use FaceDNAAsset or DNA on the face skeletal mesh (must be topology-compatible with IdentityTemplate).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
+	bool bUsePluginArchetypeFaceDNAForIdentity = true;
 
 	/**
 	 * If true and Face/Body MHC path strings are empty, fill them from MetaHumanCharacter plugin Content:
@@ -87,6 +94,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
 	bool bTickRefreshEveryFrame = false;
 
+	/** Lazily loaded from disk when bUsePluginArchetypeFaceDNAForIdentity is true; do not assign manually. */
+	UPROPERTY(Transient)
+	TObjectPtr<UDNAAsset> CachedArchetypeFaceDNAForIdentity = nullptr;
+
 	/** Initialize identity + state; call after paths/DNA are valid. Editor: full path. Game: returns false unless you use a source build that links MetaHumanCoreTechLib to game (non-standard). */
 	UFUNCTION(BlueprintCallable, Category = "MetaHuman|Gizmo")
 	bool InitializeIdentity();
@@ -113,8 +124,8 @@ protected:
 	void EnsureSphereCount(int32 Count);
 
 private:
-	/** Prefer FaceDNAAsset; else UDNAAsset from FaceMeshComponent's skeletal mesh Asset User Data. */
-	UDNAAsset* ResolveFaceDNAForInit() const;
+	/** Resolves DNA for FMetaHumanCharacterIdentity::Init (archetype SKM_Face vs explicit/mesh). */
+	UDNAAsset* ResolveFaceDNAForInit();
 
 	/** Opaque impl (cpp-only); void* avoids UHT + incomplete TUniquePtr destructor issues. */
 	void* ImplPtr = nullptr;
