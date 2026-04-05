@@ -101,6 +101,8 @@ struct FMetahumanFaceGizmoComponentImpl
 {
 	TUniquePtr<FMetaHumanCharacterIdentity> Identity;
 	TSharedPtr<FMetaHumanCharacterIdentity::FState> FaceState;
+	/** Index into Evaluate().Vertices for GizmoAlignmentBoneName (Identity face DNA joint order == MHC joint columns). */
+	int32 CachedAlignmentJointIndexInEvaluateBuffer = INDEX_NONE;
 };
 #else
 struct FMetahumanFaceGizmoComponentImpl
@@ -355,6 +357,34 @@ static void LogFaceDnaVsArchetypeTopology(UDNAAsset *FaceDNA)
 		UE_LOG(LogMetahumanGizmoRuntime, Warning,
 			   TEXT("[MetahumanGizmo] DNA vs archetype: TOPOLOGY MISMATCH — custom/wrong-version face DNA often causes CreateMHCApi failure or PatchBlendModel crashes; prefer MetaHuman-version-matched DNA or archetype face DNA."));
 	}
+}
+
+/** Same Y/Z swap as FMetaHumanCharacterIdentity::FState::EvaluateGizmos on raw MHC vertex data (MetaHumanCharacterIdentity.cpp). */
+static FVector3f ConvertRawMHCVertexToUE(const FVector3f &Raw, const EMetaHumanCharacterOrientation Orient)
+{
+	if (Orient == EMetaHumanCharacterOrientation::Y_UP)
+	{
+		return FVector3f{ Raw.X, Raw.Z, Raw.Y };
+	}
+	return FVector3f{ Raw.X, -Raw.Y, Raw.Z };
+}
+
+static int32 FindDNAJointIndexByName(const TSharedPtr<IDNAReader> &Geo, const FName &Name)
+{
+	if (!Geo.IsValid() || Name.IsNone())
+	{
+		return INDEX_NONE;
+	}
+	const FString Target = Name.ToString();
+	const uint16 N = Geo->GetJointCount();
+	for (uint16 I = 0; I < N; ++I)
+	{
+		if (Geo->GetJointName(I) == Target)
+		{
+			return static_cast<int32>(I);
+		}
+	}
+	return INDEX_NONE;
 }
 #endif
 
@@ -638,6 +668,26 @@ bool UMetahumanFaceGizmoComponent::InitializeIdentity()
 		}
 	}
 
+	Impl->CachedAlignmentJointIndexInEvaluateBuffer = INDEX_NONE;
+	if (TSharedPtr<IDNAReader> Geo = ResolvedFaceDNA->GetGeometryReader())
+	{
+		Impl->CachedAlignmentJointIndexInEvaluateBuffer = FindDNAJointIndexByName(Geo, GizmoAlignmentBoneName);
+		if (Impl->CachedAlignmentJointIndexInEvaluateBuffer == INDEX_NONE)
+		{
+			UE_LOG(LogMetahumanGizmoRuntime, Warning,
+				   TEXT("[MetahumanGizmo] Gizmo alignment: joint '%s' not found in Identity face DNA '%s' — FacialRootBone mode will fall back or skip."),
+				   *GizmoAlignmentBoneName.ToString(),
+				   *ResolvedFaceDNA->GetName());
+		}
+		else
+		{
+			UE_LOG(LogMetahumanGizmoRuntime, Log,
+				   TEXT("[MetahumanGizmo] Gizmo alignment: joint '%s' -> Evaluate().Vertices[%d] (DNA joint order)."),
+				   *GizmoAlignmentBoneName.ToString(),
+				   Impl->CachedAlignmentJointIndexInEvaluateBuffer);
+		}
+	}
+
 	bIdentityInitialized = true;
 	UE_LOG(LogMetahumanGizmoRuntime, Log, TEXT("[MetahumanGizmo] InitializeIdentity: SUCCESS"));
 	return true;
@@ -696,6 +746,68 @@ bool UMetahumanFaceGizmoComponent::RefreshGizmoTransforms()
 									 ? FaceMeshComponent->GetComponentTransform()
 									 : (GetOwner() ? GetOwner()->GetActorTransform() : FTransform::Identity);
 
+	const EMetaHumanCharacterOrientation Orient = (DNAOrientationIndex != 0)
+													  ? EMetaHumanCharacterOrientation::Z_UP
+													  : EMetaHumanCharacterOrientation::Y_UP;
+
+	FVector AlignmentDeltaWorld = FVector::ZeroVector;
+
+	const auto ComputeMeshBoundsCentroidDelta = [&]() -> FVector
+	{
+		if (!FaceMeshComponent || !bUsePluginArchetypeFaceDNAForIdentity || ManipulatorPositions.Num() == 0)
+		{
+			return FVector::ZeroVector;
+		}
+		FVector RigCentroid = FVector::ZeroVector;
+		for (const FVector3f &P : ManipulatorPositions)
+		{
+			RigCentroid += FVector(P);
+		}
+		RigCentroid /= static_cast<float>(ManipulatorPositions.Num());
+		const FVector RigCentroidWorld = MeshXform.TransformPosition(RigCentroid);
+		const FVector MeshBoundsCenterWorld = FaceMeshComponent->Bounds.Origin;
+		return MeshBoundsCenterWorld - RigCentroidWorld;
+	};
+
+	if (FaceMeshComponent && ManipulatorPositions.Num() > 0)
+	{
+		if (GizmoWorldAlignment == EMetahumanGizmoWorldAlignment::FacialRootBone)
+		{
+			const int32 JointIdx = Impl->CachedAlignmentJointIndexInEvaluateBuffer;
+			const int32 BoneIdx = FaceMeshComponent->GetBoneIndex(GizmoAlignmentBoneName);
+			if (JointIdx != INDEX_NONE && Evaluated.Vertices.IsValidIndex(JointIdx) && BoneIdx != INDEX_NONE)
+			{
+				const FVector3f RigJointUE = ConvertRawMHCVertexToUE(Evaluated.Vertices[JointIdx], Orient);
+				const FVector RigJointWorld = MeshXform.TransformPosition(FVector(RigJointUE));
+				const FTransform BoneCS = FaceMeshComponent->GetBoneTransform(BoneIdx);
+				const FVector BoneWorldPos = MeshXform.TransformPosition(BoneCS.GetLocation());
+				AlignmentDeltaWorld = BoneWorldPos - RigJointWorld;
+				UE_LOG(LogMetahumanGizmoRuntime, Verbose,
+					   TEXT("[MetahumanGizmo] Gizmo alignment: FacialRootBone | RigJointWorld=%s | BoneWorld=%s | Delta=%s"),
+					   *RigJointWorld.ToString(),
+					   *BoneWorldPos.ToString(),
+					   *AlignmentDeltaWorld.ToString());
+			}
+			else
+			{
+				UE_LOG(LogMetahumanGizmoRuntime, Verbose,
+					   TEXT("[MetahumanGizmo] FacialRootBone alignment skipped (jointIdx=%d verts=%d boneIdx=%d) — fallback=%s"),
+					   JointIdx,
+					   Evaluated.Vertices.Num(),
+					   BoneIdx,
+					   bFallbackToMeshBoundsIfBoneAlignmentFails ? TEXT("bounds") : TEXT("none"));
+				if (bFallbackToMeshBoundsIfBoneAlignmentFails)
+				{
+					AlignmentDeltaWorld = ComputeMeshBoundsCentroidDelta();
+				}
+			}
+		}
+		else if (GizmoWorldAlignment == EMetahumanGizmoWorldAlignment::MeshBoundsCentroid)
+		{
+			AlignmentDeltaWorld = ComputeMeshBoundsCentroidDelta();
+		}
+	}
+
 	if (FaceMeshComponent)
 	{
 		UE_LOG(LogMetahumanGizmoRuntime, Verbose,
@@ -718,7 +830,7 @@ bool UMetahumanFaceGizmoComponent::RefreshGizmoTransforms()
 			continue;
 		}
 
-		const FVector WorldPos = MeshXform.TransformPosition(FVector(ManipulatorPositions[i]));
+		const FVector WorldPos = MeshXform.TransformPosition(FVector(ManipulatorPositions[i])) + AlignmentDeltaWorld;
 		Sphere->SetWorldLocation(WorldPos);
 		Sphere->SetWorldScale3D(FVector(BaseGizmoMeshScale * GizmoSphereScale));
 		Sphere->SetVisibility(bShowGizmoSpheres);

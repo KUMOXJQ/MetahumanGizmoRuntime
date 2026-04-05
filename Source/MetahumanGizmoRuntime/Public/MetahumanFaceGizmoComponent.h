@@ -16,6 +16,21 @@
 #include "MetahumanFaceGizmoComponent.generated.h"
 
 class UDNAAsset;
+
+/** Corrects rig-space gizmo positions to the rendered face skeletal mesh (see RefreshGizmoTransforms). */
+UENUM(BlueprintType)
+enum class EMetahumanGizmoWorldAlignment : uint8
+{
+	/** No extra translation after FaceMeshComponent transform. */
+	None UMETA(DisplayName = "None"),
+	/**
+	 * Match Evaluate() joint position (from Identity face DNA order) to the same bone on FaceMeshComponent.
+	 * Recommended for MetaHuman (default bone: FACIAL_C_FacialRoot).
+	 */
+	FacialRootBone UMETA(DisplayName = "Facial root bone"),
+	/** Legacy: translate so gizmo centroid matches mesh bounds origin (can be skewed by hair/collisions). */
+	MeshBoundsCentroid UMETA(DisplayName = "Mesh bounds center (legacy)"),
+};
 class UMetaHumanCharacter;
 class USkeletalMeshComponent;
 
@@ -93,6 +108,21 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
 	bool bTickRefreshEveryFrame = false;
+
+	/** How to correct rig-space gizmo positions to the skinned face. Default: match FACIAL_C_FacialRoot rig joint to bone. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
+	EMetahumanGizmoWorldAlignment GizmoWorldAlignment = EMetahumanGizmoWorldAlignment::FacialRootBone;
+
+	/** DNA joint / skeletal bone used when GizmoWorldAlignment == FacialRootBone (must exist in Identity face DNA and on the skeleton). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
+	FName GizmoAlignmentBoneName = FName(TEXT("FACIAL_C_FacialRoot"));
+
+	/**
+	 * If true (default), when FacialRootBone alignment fails (missing joint or bone), fall back to mesh-bounds centroid alignment
+	 * when bUsePluginArchetypeFaceDNAForIdentity is true (same conditions as the old MeshBoundsCentroid-only path).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
+	bool bFallbackToMeshBoundsIfBoneAlignmentFails = true;
 
 	/** Lazily loaded from disk when bUsePluginArchetypeFaceDNAForIdentity is true; do not assign manually. */
 	UPROPERTY(Transient)

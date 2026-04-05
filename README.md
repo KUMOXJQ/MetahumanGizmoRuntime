@@ -49,6 +49,17 @@ Source/MetahumanGizmoRuntime/
 - **若 Init 失败**：同窗口搜索 **`LogMetaHumanCoreTechLib`** 或 **`failed to initialize MHC API`**，并核对 **Face/Body MHC 路径**是否为**磁盘上真实存在的目录**（与引擎 `MetaHumanCharacter/Content/.../IdentityTemplate` 结构一致，勿只填自定义 DNA 目录）。
 - **更细**：按 **~** 打开控制台，输入 `Log LogMetahumanGizmoRuntime Verbose` 后再 PIE，可看到 `FaceMeshComponent` 位置等 Verbose 行。
 
+## 与 UE 工程同步（开发时必做）
+
+在**引擎插件目录**改完代码后，将副本同步到工程插件（默认 `F:\UEProjects\MetaHumans57\Plugins\MetahumanGizmoRuntime`）再编译工程：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File Scripts/Sync-To-MetaHumans57.ps1
+```
+（若已安装 PowerShell 7，可将 `powershell` 换成 `pwsh`。）
+
+目标路径可通过环境变量 `METAHUMAN_GIZMO_SYNC_DEST` 覆盖。
+
 ## 验证构建
 
 在引擎外目录执行（输出路径须在 Engine 之外）：
