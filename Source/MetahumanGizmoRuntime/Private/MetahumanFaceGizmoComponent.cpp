@@ -69,6 +69,39 @@ static UMaterialInterface *LoadMetaHumanCharacterEditorGizmoMaterial()
 	return Cached;
 }
 
+/** Same mesh as UMetaHumanCharacterEditorSettings::MoveManipulatorMesh (MetaHumanCharacterEditorSettings.cpp). */
+static UStaticMesh *LoadGizmoManipulatorStaticMesh()
+{
+	static UStaticMesh *Cached = nullptr;
+	static bool bAttempted = false;
+	if (!bAttempted)
+	{
+		bAttempted = true;
+		Cached = LoadObject<UStaticMesh>(
+			nullptr,
+			TEXT("/Script/Engine.StaticMesh'/MetaHumanCharacter/Tools/SM_MoveTool_Gizmo.SM_MoveTool_Gizmo'"));
+		if (!Cached)
+		{
+			Cached = LoadObject<UStaticMesh>(nullptr, TEXT("/MetaHumanCharacter/Tools/SM_MoveTool_Gizmo.SM_MoveTool_Gizmo"));
+		}
+		if (Cached)
+		{
+			UE_LOG(LogMetahumanGizmoRuntime, Log,
+				   TEXT("[MetahumanGizmo] Loaded gizmo mesh SM_MoveTool_Gizmo (MetaHumanCharacter/Tools)."));
+		}
+		else
+		{
+			Cached = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+			if (Cached)
+			{
+				UE_LOG(LogMetahumanGizmoRuntime, Warning,
+					   TEXT("[MetahumanGizmo] SM_MoveTool_Gizmo not found — falling back to /Engine/BasicShapes/Sphere."));
+			}
+		}
+	}
+	return Cached;
+}
+
 static void ApplyMetaHumanEditorStyleGizmoMaterial(UStaticMeshComponent *Sphere)
 {
 	if (!Sphere)
@@ -906,14 +939,15 @@ void UMetahumanFaceGizmoComponent::EnsureSphereCount(int32 Count)
 		return;
 	}
 
-	if (!CachedSphereMesh)
+	if (!CachedGizmoStaticMesh)
 	{
-		CachedSphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+		CachedGizmoStaticMesh = LoadGizmoManipulatorStaticMesh();
 	}
 
-	if (!CachedSphereMesh)
+	if (!CachedGizmoStaticMesh)
 	{
-		UE_LOG(LogMetahumanGizmoRuntime, Error, TEXT("[MetahumanGizmo] EnsureSphereCount: FAIL — cannot load /Engine/BasicShapes/Sphere."));
+		UE_LOG(LogMetahumanGizmoRuntime, Error,
+			   TEXT("[MetahumanGizmo] EnsureSphereCount: FAIL — cannot load SM_MoveTool_Gizmo or fallback Sphere."));
 		return;
 	}
 
@@ -927,7 +961,7 @@ void UMetahumanFaceGizmoComponent::EnsureSphereCount(int32 Count)
 	while (GizmoSpheres.Num() < Count)
 	{
 		UStaticMeshComponent *Sphere = NewObject<UStaticMeshComponent>(Owner, NAME_None, RF_Transactional);
-		Sphere->SetStaticMesh(CachedSphereMesh);
+		Sphere->SetStaticMesh(CachedGizmoStaticMesh);
 		ApplyMetaHumanEditorStyleGizmoCollision(Sphere);
 		Sphere->SetCastShadow(false);
 		if (FaceMeshComponent)

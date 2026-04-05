@@ -165,8 +165,9 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UStaticMeshComponent>> GizmoSpheres;
 
+	/** SM_MoveTool_Gizmo when available, else cached fallback mesh from EnsureSphereCount. */
 	UPROPERTY(Transient)
-	TObjectPtr<UStaticMesh> CachedSphereMesh = nullptr;
+	TObjectPtr<UStaticMesh> CachedGizmoStaticMesh = nullptr;
 
 	float BaseGizmoMeshScale = 0.0035f;
 };
