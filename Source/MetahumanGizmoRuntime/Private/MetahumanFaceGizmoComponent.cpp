@@ -523,7 +523,7 @@ void UMetahumanFaceGizmoComponent::BeginPlay()
 		}
 	}
 
-	TryRegisterMetaHumanWithEditorSubsystem();
+	TryRegisterMetaHumanWithEditorSubsystem(false);
 }
 
 void UMetahumanFaceGizmoComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -973,6 +973,9 @@ bool UMetahumanFaceGizmoComponent::RefreshGizmoTransforms()
 
 bool UMetahumanFaceGizmoComponent::ReinitializeIdentity()
 {
+	// Match a fresh ResolveFaceDNAForInit (e.g. after toggling bUsePluginArchetypeFaceDNAForIdentity or switching mesh DNA).
+	CachedArchetypeFaceDNAForIdentity = nullptr;
+
 	ReleaseGizmoSpheres();
 	DeleteImpl(ImplPtr);
 	bIdentityInitialized = false;
@@ -985,6 +988,49 @@ bool UMetahumanFaceGizmoComponent::ReinitializeIdentity()
 	}
 #endif
 	return bOk;
+}
+
+bool UMetahumanFaceGizmoComponent::SetActiveMetaHumanCharacter(UMetaHumanCharacter *NewCharacter, USkeletalMeshComponent *NewFaceMesh,
+															  bool bUnregisterPreviousCharacterFromEditor)
+{
+#if WITH_EDITOR
+	UMetaHumanCharacter *const PreviousCharacter = SourceMetaHumanCharacter;
+#endif
+	if (IsValid(NewFaceMesh))
+	{
+		FaceMeshComponent = NewFaceMesh;
+	}
+	SourceMetaHumanCharacter = NewCharacter;
+
+#if WITH_EDITOR
+	if (bUnregisterPreviousCharacterFromEditor && GEditor && IsValid(PreviousCharacter) && PreviousCharacter != NewCharacter)
+	{
+		if (UMetaHumanCharacterEditorSubsystem *const SubSys = GEditor->GetEditorSubsystem<UMetaHumanCharacterEditorSubsystem>())
+		{
+			if (SubSys->IsObjectAddedForEditing(PreviousCharacter))
+			{
+				SubSys->RemoveObjectToEdit(PreviousCharacter);
+				UE_LOG(LogMetahumanGizmoRuntime, Log,
+					   TEXT("[MetahumanGizmo] SetActiveMetaHumanCharacter: RemoveObjectToEdit('%s') before switching active character."),
+					   *PreviousCharacter->GetName());
+			}
+		}
+	}
+#endif
+
+	const bool bOk = ReinitializeIdentity();
+#if WITH_EDITOR
+	if (bOk)
+	{
+		TryRegisterMetaHumanWithEditorSubsystem(true);
+	}
+#endif
+	return bOk;
+}
+
+void UMetahumanFaceGizmoComponent::RegisterSourceCharacterForEditorFaceUpdates()
+{
+	TryRegisterMetaHumanWithEditorSubsystem(true);
 }
 
 int32 UMetahumanFaceGizmoComponent::GetNumGizmos() const
@@ -1147,10 +1193,14 @@ void UMetahumanFaceGizmoComponent::SetGizmoSphereDragMaterialState(int32 GizmoIn
 	}
 }
 
-void UMetahumanFaceGizmoComponent::TryRegisterMetaHumanWithEditorSubsystem()
+void UMetahumanFaceGizmoComponent::TryRegisterMetaHumanWithEditorSubsystem(bool bFromSetActiveOrExplicit)
 {
 #if WITH_EDITOR
-	if (!bAutoRegisterCharacterForEditorFaceUpdates || !bApplyLiveFaceMeshUpdates || !IsValid(SourceMetaHumanCharacter))
+	if (!bApplyLiveFaceMeshUpdates || !IsValid(SourceMetaHumanCharacter))
+	{
+		return;
+	}
+	if (!bFromSetActiveOrExplicit && !bAutoRegisterCharacterForEditorFaceUpdates)
 	{
 		return;
 	}

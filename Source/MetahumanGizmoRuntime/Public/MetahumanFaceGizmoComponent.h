@@ -198,9 +198,32 @@ public:
 	/**
 	 * Tear down MHC glue and run InitializeIdentity again. Call after SourceMetaHumanCharacter or face DNA change;
 	 * RefreshGizmoTransforms alone is not enough.
+	 * Clears cached archetype DNA so ResolveFaceDNAForInit can reload (important when toggling DNA source).
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MetaHuman|Gizmo")
 	bool ReinitializeIdentity();
+
+	/**
+	 * Switch the MetaHuman asset (and optionally the face skeletal mesh) this component drives, then re-run Identity init.
+	 * Same Face/Body MHC + DNA rules as InitializeIdentity: with bUsePluginArchetypeFaceDNAForIdentity (default true),
+	 * Init uses plugin SKM_Face.dna like Creator GetOrCreateCharacterIdentity — custom shape comes from
+	 * SourceMetaHumanCharacter face state Deserialize, not from requiring a unique DNA file per character for Init.
+	 * Editor/PIE: optionally RemoveObjectToEdit(previous) then TryAddObjectToEdit(new) for ApplyFaceState.
+	 *
+	 * @param NewCharacter UMetaHumanCharacter to edit (face state deserialized when buffer non-empty). Null clears the reference (ApplyFaceState will no-op).
+	 * @param NewFaceMesh If set, assigns FaceMeshComponent; if null, keeps the current face mesh reference.
+	 * @param bUnregisterPreviousCharacterFromEditor If true and Editor build, RemoveObjectToEdit(previous) before re-init when previous != new.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "MetaHuman|Gizmo", meta = (DisplayName = "Set Active MetaHuman Character"))
+	bool SetActiveMetaHumanCharacter(UMetaHumanCharacter *NewCharacter, USkeletalMeshComponent *NewFaceMesh, bool bUnregisterPreviousCharacterFromEditor = true);
+
+	/**
+	 * Editor/PIE: register SourceMetaHumanCharacter with UMetaHumanCharacterEditorSubsystem (TryAddObjectToEdit).
+	 * Call after ReinitializeIdentity if bAutoRegisterCharacterForEditorFaceUpdates is false, or after changing SourceMetaHumanCharacter manually.
+	 * Ignores bAutoRegisterCharacterForEditorFaceUpdates — use when you explicitly need registration.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "MetaHuman|Gizmo", meta = (DisplayName = "Register Source Character For Editor Face Updates"))
+	void RegisterSourceCharacterForEditorFaceUpdates();
 
 	UFUNCTION(BlueprintPure, Category = "MetaHuman|Gizmo")
 	bool IsIdentityInitialized() const { return bIdentityInitialized; }
@@ -219,8 +242,11 @@ private:
 	/** Resolves DNA for FMetaHumanCharacterIdentity::Init (archetype SKM_Face vs explicit/mesh). */
 	UDNAAsset* ResolveFaceDNAForInit();
 
-	/** Editor/PIE: register SourceMetaHumanCharacter with UMetaHumanCharacterEditorSubsystem (no-op in non-editor builds). */
-	void TryRegisterMetaHumanWithEditorSubsystem();
+	/**
+	 * Editor/PIE: register SourceMetaHumanCharacter with UMetaHumanCharacterEditorSubsystem.
+	 * @param bFromSetActiveOrExplicit When true, skips bAutoRegisterCharacterForEditorFaceUpdates (used by SetActiveMetaHumanCharacter / RegisterSourceCharacterForEditorFaceUpdates).
+	 */
+	void TryRegisterMetaHumanWithEditorSubsystem(bool bFromSetActiveOrExplicit = false);
 	/** Editor/PIE: ApplyFaceState to refresh face SKM from current Impl FaceState (no-op in non-editor builds). */
 	void TryPushFaceStateToEditorSubsystem();
 
