@@ -168,7 +168,7 @@ static void ApplyMetaHumanEditorStyleGizmoMaterial(UStaticMeshComponent *Sphere)
 	}
 }
 
-/** Query-only collision for per-gizmo LineTraceComponent picking (Editor HitTest). Block Visibility/Camera; WorldStatic kept for compatibility with world queries. */
+/** Query-only collision for per-gizmo LineTraceComponent picking (Editor HitTest). Block WorldStatic, Visibility, Camera; ignore other channels. */
 static void ApplyMetaHumanEditorStyleGizmoCollision(UStaticMeshComponent *Sphere)
 {
 	if (!Sphere)
