@@ -30,6 +30,16 @@ public class MetahumanGizmoRuntime : ModuleRules
 			PrivateDefinitions.Add("WITH_METAHUMAN_GIZMO_RUNTIME_EVAL=0");
 		}
 
+		// Editor/PIE: GEditor + UMetaHumanCharacterEditorSubsystem::ApplyFaceState (UpdateFaceMeshInternal) for live face deformation.
+		if (Target.Type == TargetType.Editor)
+		{
+			PrivateDependencyModuleNames.AddRange(new string[]
+			{
+				"UnrealEd",
+				"MetaHumanCharacterEditor",
+			});
+		}
+
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"MetaHumanCharacter",

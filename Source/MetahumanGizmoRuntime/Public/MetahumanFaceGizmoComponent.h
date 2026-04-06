@@ -117,7 +117,7 @@ public:
 	 * When true, Tick drives Move interaction: LMB picks a gizmo via UStaticMeshComponent::LineTraceComponent per sphere
 	 * (same strategy as UMetaHumanCharacterEditorMeshEditingTool::HitTest), drag moves it in a camera-facing plane
 	 * using FState::SetGizmoPosition (same as MetaHuman Character Editor Face Move tool). Requires a PlayerController and FaceMeshComponent.
-	 * Face skeletal mesh vertex update is not applied here — use OnGizmoMoved / OnGizmoDragEnd to sync UMetaHumanCharacter or editor pipeline.
+	 * With bApplyLiveFaceMeshUpdates (Editor/PIE), face SKM is updated via UMetaHumanCharacterEditorSubsystem::ApplyFaceState; otherwise use OnGizmoMoved to sync.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move")
 	bool bEnableMoveInteraction = false;
@@ -137,6 +137,20 @@ public:
 	/** Clamp to rig gizmo bounds (stricter; leave false for loose editing). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move")
 	bool bEnforceGizmoBounds = false;
+
+	/**
+	 * Editor / PIE only (WITH_EDITOR): after each gizmo move, call UMetaHumanCharacterEditorSubsystem::ApplyFaceState so the face skeletal mesh
+	 * vertices match FState::Evaluate (same pipeline as MetaHuman Character Editor Face Move). Requires SourceMetaHumanCharacter and successful TryAddObjectToEdit.
+	 * No effect in packaged game builds (Editor module not linked).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move")
+	bool bApplyLiveFaceMeshUpdates = true;
+
+	/**
+	 * Editor / PIE only: on BeginPlay after init, call TryAddObjectToEdit(SourceMetaHumanCharacter) once so the editor subsystem owns face mesh + DNA maps for ApplyFaceState.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "bApplyLiveFaceMeshUpdates"))
+	bool bAutoRegisterCharacterForEditorFaceUpdates = true;
 
 	UPROPERTY(BlueprintAssignable, Category = "MetaHuman|Gizmo|Move")
 	FOnMetahumanGizmoDragBegin OnGizmoDragBegin;
@@ -197,6 +211,11 @@ private:
 
 	/** Resolves DNA for FMetaHumanCharacterIdentity::Init (archetype SKM_Face vs explicit/mesh). */
 	UDNAAsset* ResolveFaceDNAForInit();
+
+	/** Editor/PIE: register SourceMetaHumanCharacter with UMetaHumanCharacterEditorSubsystem (no-op in non-editor builds). */
+	void TryRegisterMetaHumanWithEditorSubsystem();
+	/** Editor/PIE: ApplyFaceState to refresh face SKM from current Impl FaceState (no-op in non-editor builds). */
+	void TryPushFaceStateToEditorSubsystem();
 
 	/** Opaque impl (cpp-only); void* avoids UHT + incomplete TUniquePtr destructor issues. */
 	void* ImplPtr = nullptr;

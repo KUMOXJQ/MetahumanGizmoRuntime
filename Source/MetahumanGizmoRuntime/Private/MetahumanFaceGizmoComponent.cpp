@@ -44,6 +44,11 @@
 #include "Misc/Paths.h"
 #include "UObject/UObjectGlobals.h"
 #endif
+#if WITH_EDITOR
+#include "Editor.h"
+#include "MetaHumanCharacter.h"
+#include "MetaHumanCharacterEditorSubsystem.h"
+#endif
 
 // 输出日志中搜索：[MetahumanGizmo]
 // 更细：控制台输入 Log LogMetahumanGizmoRuntime Verbose
@@ -517,6 +522,8 @@ void UMetahumanFaceGizmoComponent::BeginPlay()
 			UE_LOG(LogMetahumanGizmoRuntime, Error, TEXT("[MetahumanGizmo] BeginPlay: InitializeIdentity failed — no gizmos. Check DNA, MHC paths, and LogMetaHumanCoreTechLib if Init failed."));
 		}
 	}
+
+	TryRegisterMetaHumanWithEditorSubsystem();
 }
 
 void UMetahumanFaceGizmoComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -1124,6 +1131,85 @@ void UMetahumanFaceGizmoComponent::SetGizmoSphereDragMaterialState(int32 GizmoIn
 	}
 }
 
+void UMetahumanFaceGizmoComponent::TryRegisterMetaHumanWithEditorSubsystem()
+{
+#if WITH_EDITOR
+	if (!bAutoRegisterCharacterForEditorFaceUpdates || !bApplyLiveFaceMeshUpdates || !IsValid(SourceMetaHumanCharacter))
+	{
+		return;
+	}
+	if (!GEditor)
+	{
+		return;
+	}
+	UMetaHumanCharacterEditorSubsystem *const SubSys = GEditor->GetEditorSubsystem<UMetaHumanCharacterEditorSubsystem>();
+	if (!SubSys)
+	{
+		return;
+	}
+	if (SubSys->IsObjectAddedForEditing(SourceMetaHumanCharacter))
+	{
+		return;
+	}
+	const bool bOk = SubSys->TryAddObjectToEdit(SourceMetaHumanCharacter);
+	UE_LOG(LogMetahumanGizmoRuntime, Log,
+		   TEXT("[MetahumanGizmo] TryAddObjectToEdit(SourceMetaHumanCharacter) -> %s (live face mesh updates require this in Editor/PIE)."),
+		   bOk ? TEXT("OK") : TEXT("FAILED"));
+#endif
+}
+
+void UMetahumanFaceGizmoComponent::TryPushFaceStateToEditorSubsystem()
+{
+#if WITH_EDITOR
+#if WITH_METAHUMAN_GIZMO_RUNTIME_EVAL
+	if (!bApplyLiveFaceMeshUpdates || !IsValid(SourceMetaHumanCharacter) || !bIdentityInitialized || !ImplPtr)
+	{
+		return;
+	}
+	FMetahumanFaceGizmoComponentImpl *const Impl = static_cast<FMetahumanFaceGizmoComponentImpl *>(ImplPtr);
+	if (!Impl->FaceState.IsValid())
+	{
+		return;
+	}
+	if (!GEditor)
+	{
+		return;
+	}
+	UMetaHumanCharacterEditorSubsystem *const SubSys = GEditor->GetEditorSubsystem<UMetaHumanCharacterEditorSubsystem>();
+	if (!SubSys || !SubSys->IsObjectAddedForEditing(SourceMetaHumanCharacter))
+	{
+		return;
+	}
+	const TSharedRef<const FMetaHumanCharacterIdentity::FState> StateCopy = MakeShared<FMetaHumanCharacterIdentity::FState>(*Impl->FaceState);
+	SubSys->ApplyFaceState(SourceMetaHumanCharacter, StateCopy);
+	UE_LOG(LogMetahumanGizmoRuntime, Verbose, TEXT("[MetahumanGizmo] ApplyFaceState pushed after gizmo edit (live face SKM update)."));
+
+	// ApplyFaceState updates CharacterData->FaceMesh in place; the editor preview path calls OnFaceMeshUpdated on actors in
+	// CharacterActorList (CreateMetaHumanCharacterEditorActor). PIE/placed characters are usually not in that list, and their
+	// FaceMeshComponent may still reference a different USkeletalMesh asset — sync to the subsystem edit mesh and refresh.
+	if (FaceMeshComponent)
+	{
+		// TNotNull<const USkeletalMesh*> converts implicitly to pointer (no .Get() in UE5.7).
+		const USkeletalMesh *const EditMeshConst = SubSys->Debug_GetFaceEditMesh(SourceMetaHumanCharacter);
+		USkeletalMesh *const EditMesh = const_cast<USkeletalMesh *>(EditMeshConst);
+		if (EditMesh)
+		{
+			// UE 5.1+: use GetSkeletalMeshAsset / SetSkeletalMeshAsset (GetSkeletalMesh removed from public API).
+			if (FaceMeshComponent->GetSkeletalMeshAsset() != EditMesh)
+			{
+				FaceMeshComponent->SetSkeletalMeshAsset(EditMesh);
+				UE_LOG(LogMetahumanGizmoRuntime, Log,
+					   TEXT("[MetahumanGizmo] FaceMeshComponent now uses subsystem edit mesh '%s' (required for live deformation in PIE)."),
+					   *EditMesh->GetName());
+			}
+			FaceMeshComponent->MarkRenderStateDirty();
+			FaceMeshComponent->UpdateBounds();
+		}
+	}
+#endif
+#endif
+}
+
 void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 {
 	(void)DeltaTime;
@@ -1242,6 +1328,24 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 		float X = 0.f;
 		float Y = 0.f;
 		PC->GetMousePosition(X, Y);
+		// Editor (MetaHumanCharacterEditorMeshEditingTools) gets pixel deltas from Slate drag events; PIE/game often
+		// uses mouse capture (FPS look) so GetMousePosition stays fixed while the user moves the mouse — use
+		// GetInputMouseDelta in that case or WorldDelta stays zero (DRAG_END "no position apply").
+		float MouseDeltaX = 0.f;
+		float MouseDeltaY = 0.f;
+		PC->GetInputMouseDelta(MouseDeltaX, MouseDeltaY);
+		const bool bAbsUnchanged =
+			FMath::IsNearlyEqual(X, LastMoveScreenX, 0.5f) && FMath::IsNearlyEqual(Y, LastMoveScreenY, 0.5f);
+		const bool bHasFrameMouseDelta = !FMath::IsNearlyZero(MouseDeltaX) || !FMath::IsNearlyZero(MouseDeltaY);
+		if (bAbsUnchanged && bHasFrameMouseDelta)
+		{
+			X = LastMoveScreenX + MouseDeltaX;
+			Y = LastMoveScreenY + MouseDeltaY;
+			UE_LOG(LogMetahumanGizmoRuntime, Verbose,
+				   TEXT("[MetahumanGizmo] MoveInteraction | using GetInputMouseDelta (%.3f, %.3f) — viewport position was fixed (mouse capture / look)"),
+				   MouseDeltaX,
+				   MouseDeltaY);
+		}
 
 		UStaticMeshComponent *const DragSphere = GizmoSpheres.IsValidIndex(MoveDragGizmoIndex) ? GizmoSpheres[MoveDragGizmoIndex] : nullptr;
 		const FVector GizmoWorld = DragSphere ? DragSphere->GetComponentLocation() : FVector::ZeroVector;
@@ -1283,6 +1387,7 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 															static_cast<float>(RigDelta.Z));
 			Impl->FaceState->SetGizmoPosition(MoveDragGizmoIndex, NewRig, bSymmetricMove, bEnforceGizmoBounds);
 			(void)RefreshGizmoTransforms();
+			TryPushFaceStateToEditorSubsystem();
 			const bool bFirstApplyThisDrag = !bMoveAppliedThisDrag;
 			bMoveAppliedThisDrag = true;
 			if (bFirstApplyThisDrag)
