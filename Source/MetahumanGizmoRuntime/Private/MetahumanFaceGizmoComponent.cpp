@@ -824,7 +824,7 @@ bool UMetahumanFaceGizmoComponent::RefreshGizmoTransforms()
 	const FMetaHumanRigEvaluatedState Evaluated = Impl->FaceState->Evaluate();
 	const TArray<FVector3f> ManipulatorPositions = Impl->FaceState->EvaluateGizmos(Evaluated.Vertices);
 
-	UE_LOG(LogMetahumanGizmoRuntime, Log,
+	UE_LOG(LogMetahumanGizmoRuntime, Verbose,
 		   TEXT("[MetahumanGizmo] RefreshGizmoTransforms: Evaluate verts=%d | gizmo points=%d"),
 		   Evaluated.Vertices.Num(),
 		   ManipulatorPositions.Num());
@@ -910,6 +910,21 @@ bool UMetahumanFaceGizmoComponent::RefreshGizmoTransforms()
 		}
 	}
 
+	// During LMB drag, optional freeze: reuse AlignmentDeltaWorld from the first refresh of this drag so bone/rig mismatch after
+	// ApplyFaceState does not oscillate the gizmo spheres every frame (see ProcessMoveInteraction push order).
+	if (MoveDragGizmoIndex != INDEX_NONE && bFreezeGizmoAlignmentWhileDragging)
+	{
+		if (bDragAlignmentCacheValid)
+		{
+			AlignmentDeltaWorld = CachedDragAlignmentDeltaWorld;
+		}
+		else
+		{
+			CachedDragAlignmentDeltaWorld = AlignmentDeltaWorld;
+			bDragAlignmentCacheValid = true;
+		}
+	}
+
 	if (FaceMeshComponent)
 	{
 		UE_LOG(LogMetahumanGizmoRuntime, Verbose,
@@ -940,7 +955,7 @@ bool UMetahumanFaceGizmoComponent::RefreshGizmoTransforms()
 
 		if (i == 0)
 		{
-			UE_LOG(LogMetahumanGizmoRuntime, Log,
+			UE_LOG(LogMetahumanGizmoRuntime, Verbose,
 				   TEXT("[MetahumanGizmo] First gizmo world pos=%s | ShowSpheres=%s | Scale=%.4f"),
 				   *WorldPos.ToString(),
 				   bShowGizmoSpheres ? TEXT("true") : TEXT("false"),
@@ -948,7 +963,7 @@ bool UMetahumanFaceGizmoComponent::RefreshGizmoTransforms()
 		}
 	}
 
-	UE_LOG(LogMetahumanGizmoRuntime, Log, TEXT("[MetahumanGizmo] RefreshGizmoTransforms: DONE"));
+	UE_LOG(LogMetahumanGizmoRuntime, Verbose, TEXT("[MetahumanGizmo] RefreshGizmoTransforms: DONE"));
 	return true;
 #else
 	UE_LOG(LogMetahumanGizmoRuntime, Verbose, TEXT("[MetahumanGizmo] RefreshGizmoTransforms: no-op (EVAL=0)."));
@@ -1000,6 +1015,7 @@ void UMetahumanFaceGizmoComponent::ReleaseGizmoSpheres()
 		bMoveAppliedThisDrag = false;
 		OnGizmoDragEnd.Broadcast(EndedIndex);
 		MoveDragGizmoIndex = INDEX_NONE;
+		bDragAlignmentCacheValid = false;
 	}
 #endif
 	for (UStaticMeshComponent *Sphere : GizmoSpheres)
@@ -1049,7 +1065,7 @@ void UMetahumanFaceGizmoComponent::EnsureSphereCount(int32 Count)
 		ApplyMetaHumanEditorStyleGizmoCollision(Sphere);
 		if (bFirstSphere)
 		{
-			UE_LOG(LogMetahumanGizmoRuntime, Log,
+			UE_LOG(LogMetahumanGizmoRuntime, Verbose,
 				   TEXT("[MetahumanGizmo] Gizmo sphere collision | CollisionEnabled=QueryOnly | ObjectType=WorldDynamic | "
 						"Response: Block WorldStatic, Visibility, Camera; Ignore all other channels | OverlapEvents=false"));
 		}
@@ -1078,7 +1094,7 @@ void UMetahumanFaceGizmoComponent::EnsureSphereCount(int32 Count)
 		}
 	}
 
-	UE_LOG(LogMetahumanGizmoRuntime, Log,
+	UE_LOG(LogMetahumanGizmoRuntime, Verbose,
 		   TEXT("[MetahumanGizmo] EnsureSphereCount: OK | need=%d | have=%d"),
 		   Count,
 		   GizmoSpheres.Num());
@@ -1259,6 +1275,7 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 		bMoveAppliedThisDrag = false;
 		OnGizmoDragEnd.Broadcast(EndedIndex);
 		MoveDragGizmoIndex = INDEX_NONE;
+		bDragAlignmentCacheValid = false;
 		return;
 	}
 
@@ -1305,6 +1322,7 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 		{
 			MoveDragGizmoIndex = Idx;
 			bMoveAppliedThisDrag = false;
+			bDragAlignmentCacheValid = false;
 			PC->GetMousePosition(LastMoveScreenX, LastMoveScreenY);
 			SetGizmoSphereDragMaterialState(Idx, true);
 			UE_LOG(LogMetahumanGizmoRuntime, Log,
@@ -1386,8 +1404,9 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 															static_cast<float>(RigDelta.Y),
 															static_cast<float>(RigDelta.Z));
 			Impl->FaceState->SetGizmoPosition(MoveDragGizmoIndex, NewRig, bSymmetricMove, bEnforceGizmoBounds);
-			(void)RefreshGizmoTransforms();
+			// Push face mesh first so bones/Evaluate align with deformed SKM before recomputing gizmo world positions.
 			TryPushFaceStateToEditorSubsystem();
+			(void)RefreshGizmoTransforms();
 			const bool bFirstApplyThisDrag = !bMoveAppliedThisDrag;
 			bMoveAppliedThisDrag = true;
 			if (bFirstApplyThisDrag)

@@ -139,6 +139,13 @@ public:
 	bool bEnforceGizmoBounds = false;
 
 	/**
+	 * While LMB-dragging a gizmo, keep world alignment (FacialRootBone / bounds delta) fixed to the value from the first refresh in that drag.
+	 * Reduces jitter from per-frame bone vs rig mismatch after ApplyFaceState. Cleared on drag end.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move")
+	bool bFreezeGizmoAlignmentWhileDragging = true;
+
+	/**
 	 * Editor / PIE only (WITH_EDITOR): after each gizmo move, call UMetaHumanCharacterEditorSubsystem::ApplyFaceState so the face skeletal mesh
 	 * vertices match FState::Evaluate (same pipeline as MetaHuman Character Editor Face Move). Requires SourceMetaHumanCharacter and successful TryAddObjectToEdit.
 	 * No effect in packaged game builds (Editor module not linked).
@@ -236,4 +243,9 @@ private:
 	float LastMoveScreenY = 0.f;
 	/** True after at least one SetGizmoPosition in the current LMB drag (for DRAG_END summary log). */
 	bool bMoveAppliedThisDrag = false;
+
+	/** When true, CachedDragAlignmentDeltaWorld is used in RefreshGizmoTransforms (LMB drag only). */
+	bool bDragAlignmentCacheValid = false;
+	/** Snapshot of AlignmentDeltaWorld for the current drag; avoids per-frame FacialRootBone wobble while dragging. */
+	FVector CachedDragAlignmentDeltaWorld = FVector::ZeroVector;
 };
