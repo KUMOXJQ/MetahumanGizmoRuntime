@@ -34,6 +34,10 @@ enum class EMetahumanGizmoWorldAlignment : uint8
 class UMetaHumanCharacter;
 class USkeletalMeshComponent;
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMetahumanGizmoDragBegin, int32, GizmoIndex);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMetahumanGizmoMoved, int32, GizmoIndex, FVector, NewRigPosition);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMetahumanGizmoDragEnd, int32, GizmoIndex);
+
 /**
  * Runtime facial gizmo visualization aligned with MetaHuman Creator logic:
  * FaceState->EvaluateGizmos(FaceState->Evaluate().Vertices) via MetaHumanCoreTechLib (Editor target only).
@@ -109,6 +113,40 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
 	bool bTickRefreshEveryFrame = false;
 
+	/**
+	 * When true, Tick drives Move interaction: LMB picks a gizmo via UStaticMeshComponent::LineTraceComponent per sphere
+	 * (same strategy as UMetaHumanCharacterEditorMeshEditingTool::HitTest), drag moves it in a camera-facing plane
+	 * using FState::SetGizmoPosition (same as MetaHuman Character Editor Face Move tool). Requires a PlayerController and FaceMeshComponent.
+	 * Face skeletal mesh vertex update is not applied here — use OnGizmoMoved / OnGizmoDragEnd to sync UMetaHumanCharacter or editor pipeline.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move")
+	bool bEnableMoveInteraction = false;
+
+	/** Player index for GetPlayerController (default 0). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (ClampMin = "0"))
+	int32 MoveInteractionPlayerIndex = 0;
+
+	/** Scales screen-to-world drag delta (1 = same as editor-style plane drag). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (ClampMin = "0.01"))
+	float MoveInteractionSpeed = 1.f;
+
+	/** Mirror gizmo edits to symmetric control (same as Creator). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move")
+	bool bSymmetricMove = true;
+
+	/** Clamp to rig gizmo bounds (stricter; leave false for loose editing). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move")
+	bool bEnforceGizmoBounds = false;
+
+	UPROPERTY(BlueprintAssignable, Category = "MetaHuman|Gizmo|Move")
+	FOnMetahumanGizmoDragBegin OnGizmoDragBegin;
+
+	UPROPERTY(BlueprintAssignable, Category = "MetaHuman|Gizmo|Move")
+	FOnMetahumanGizmoMoved OnGizmoMoved;
+
+	UPROPERTY(BlueprintAssignable, Category = "MetaHuman|Gizmo|Move")
+	FOnMetahumanGizmoDragEnd OnGizmoDragEnd;
+
 	/** How to correct rig-space gizmo positions to the skinned face. Default: match FACIAL_C_FacialRoot rig joint to bone. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo")
 	EMetahumanGizmoWorldAlignment GizmoWorldAlignment = EMetahumanGizmoWorldAlignment::FacialRootBone;
@@ -154,6 +192,9 @@ protected:
 	void EnsureSphereCount(int32 Count);
 
 private:
+	void ProcessMoveInteraction(float DeltaTime);
+	void SetGizmoSphereDragMaterialState(int32 GizmoIndex, bool bDragging);
+
 	/** Resolves DNA for FMetaHumanCharacterIdentity::Init (archetype SKM_Face vs explicit/mesh). */
 	UDNAAsset* ResolveFaceDNAForInit();
 
@@ -170,4 +211,10 @@ private:
 	TObjectPtr<UStaticMesh> CachedGizmoStaticMesh = nullptr;
 
 	float BaseGizmoMeshScale = 0.0035f;
+
+	int32 MoveDragGizmoIndex = INDEX_NONE;
+	float LastMoveScreenX = 0.f;
+	float LastMoveScreenY = 0.f;
+	/** True after at least one SetGizmoPosition in the current LMB drag (for DRAG_END summary log). */
+	bool bMoveAppliedThisDrag = false;
 };

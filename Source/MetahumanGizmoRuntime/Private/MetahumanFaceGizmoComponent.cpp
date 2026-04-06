@@ -30,8 +30,15 @@
 #include "GameFramework/Actor.h"
 #include "Engine/EngineTypes.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
+#include "Kismet/GameplayStatics.h"
+#include "GameFramework/PlayerController.h"
 #if WITH_METAHUMAN_GIZMO_RUNTIME_EVAL
+#include "CollisionQueryParams.h"
+#include "EngineDefines.h"
+#include "Engine/World.h"
+#include "PhysicsEngine/BodySetup.h"
 #include "HAL/PlatformFileManager.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
@@ -69,6 +76,25 @@ static UMaterialInterface *LoadMetaHumanCharacterEditorGizmoMaterial()
 	return Cached;
 }
 
+/** True if the mesh has simple/cooked collision; otherwise line traces pass through (common cause: rayHits=1 floor only). */
+static bool StaticMeshHasQueryableCollision(UStaticMesh *Mesh)
+{
+	if (!Mesh)
+	{
+		return false;
+	}
+	UBodySetup *const BS = Mesh->GetBodySetup();
+	if (!BS)
+	{
+		return false;
+	}
+	if (BS->bHasCookedCollisionData)
+	{
+		return true;
+	}
+	return BS->AggGeom.GetElementCount() > 0;
+}
+
 /** Same mesh as UMetaHumanCharacterEditorSettings::MoveManipulatorMesh (MetaHumanCharacterEditorSettings.cpp). */
 static UStaticMesh *LoadGizmoManipulatorStaticMesh()
 {
@@ -88,6 +114,27 @@ static UStaticMesh *LoadGizmoManipulatorStaticMesh()
 		{
 			UE_LOG(LogMetahumanGizmoRuntime, Log,
 				   TEXT("[MetahumanGizmo] Loaded gizmo mesh SM_MoveTool_Gizmo (MetaHumanCharacter/Tools)."));
+			if (!StaticMeshHasQueryableCollision(Cached))
+			{
+				UStaticMesh *const Fallback = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+				if (Fallback && StaticMeshHasQueryableCollision(Fallback))
+				{
+					UE_LOG(LogMetahumanGizmoRuntime, Warning,
+						   TEXT("[MetahumanGizmo] SM_MoveTool_Gizmo has no collision geometry — using /Engine/BasicShapes/Sphere for gizmo spheres."));
+					Cached = Fallback;
+				}
+				else if (Fallback)
+				{
+					UE_LOG(LogMetahumanGizmoRuntime, Warning,
+						   TEXT("[MetahumanGizmo] SM_MoveTool_Gizmo has no collision — forcing Engine Sphere mesh (collision check inconclusive)."));
+					Cached = Fallback;
+				}
+				else
+				{
+					UE_LOG(LogMetahumanGizmoRuntime, Error,
+						   TEXT("[MetahumanGizmo] SM_MoveTool_Gizmo has no collision and Engine Sphere failed to load — MoveInteraction may never hit gizmos."));
+				}
+			}
 		}
 		else
 		{
@@ -97,6 +144,13 @@ static UStaticMesh *LoadGizmoManipulatorStaticMesh()
 				UE_LOG(LogMetahumanGizmoRuntime, Warning,
 					   TEXT("[MetahumanGizmo] SM_MoveTool_Gizmo not found — falling back to /Engine/BasicShapes/Sphere."));
 			}
+		}
+		if (Cached)
+		{
+			UE_LOG(LogMetahumanGizmoRuntime, Log,
+				   TEXT("[MetahumanGizmo] Gizmo static mesh resolved | path=%s | queryableCollision=%s"),
+				   *Cached->GetPathName(),
+				   StaticMeshHasQueryableCollision(Cached) ? TEXT("true") : TEXT("false"));
 		}
 	}
 	return Cached;
@@ -114,7 +168,7 @@ static void ApplyMetaHumanEditorStyleGizmoMaterial(UStaticMeshComponent *Sphere)
 	}
 }
 
-/** Query-only collision so LineTraceComponent / visibility traces can hit (see UMetaHumanCharacterEditorMeshEditingTool::HitTest). */
+/** Query-only collision for per-gizmo LineTraceComponent picking (Editor HitTest). Block Visibility/Camera; WorldStatic kept for compatibility with world queries. */
 static void ApplyMetaHumanEditorStyleGizmoCollision(UStaticMeshComponent *Sphere)
 {
 	if (!Sphere)
@@ -124,6 +178,7 @@ static void ApplyMetaHumanEditorStyleGizmoCollision(UStaticMeshComponent *Sphere
 	Sphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	Sphere->SetCollisionObjectType(ECC_WorldDynamic);
 	Sphere->SetCollisionResponseToAllChannels(ECR_Ignore);
+	Sphere->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
 	Sphere->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
 	Sphere->SetCollisionResponseToChannel(ECC_Camera, ECR_Block);
 	Sphere->SetGenerateOverlapEvents(false);
@@ -397,9 +452,9 @@ static FVector3f ConvertRawMHCVertexToUE(const FVector3f &Raw, const EMetaHumanC
 {
 	if (Orient == EMetaHumanCharacterOrientation::Y_UP)
 	{
-		return FVector3f{ Raw.X, Raw.Z, Raw.Y };
+		return FVector3f{Raw.X, Raw.Z, Raw.Y};
 	}
-	return FVector3f{ Raw.X, -Raw.Y, Raw.Z };
+	return FVector3f{Raw.X, -Raw.Y, Raw.Z};
 }
 
 static int32 FindDNAJointIndexByName(const TSharedPtr<IDNAReader> &Geo, const FName &Name)
@@ -476,6 +531,13 @@ void UMetahumanFaceGizmoComponent::EndPlay(const EEndPlayReason::Type EndPlayRea
 void UMetahumanFaceGizmoComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction *ThisTick)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTick);
+
+#if WITH_METAHUMAN_GIZMO_RUNTIME_EVAL
+	if (bEnableMoveInteraction && bIdentityInitialized)
+	{
+		ProcessMoveInteraction(DeltaTime);
+	}
+#endif
 
 	if (bTickRefreshEveryFrame && bIdentityInitialized)
 	{
@@ -919,6 +981,20 @@ int32 UMetahumanFaceGizmoComponent::GetNumGizmos() const
 
 void UMetahumanFaceGizmoComponent::ReleaseGizmoSpheres()
 {
+#if WITH_METAHUMAN_GIZMO_RUNTIME_EVAL
+	if (MoveDragGizmoIndex != INDEX_NONE)
+	{
+		const int32 EndedIndex = MoveDragGizmoIndex;
+		SetGizmoSphereDragMaterialState(MoveDragGizmoIndex, false);
+		UE_LOG(LogMetahumanGizmoRuntime, Log,
+			   TEXT("[MetahumanGizmo] MoveInteraction | DRAG_END gizmo index=%d (ReleaseGizmoSpheres / reinit) | hadApply=%s"),
+			   EndedIndex,
+			   bMoveAppliedThisDrag ? TEXT("true") : TEXT("false"));
+		bMoveAppliedThisDrag = false;
+		OnGizmoDragEnd.Broadcast(EndedIndex);
+		MoveDragGizmoIndex = INDEX_NONE;
+	}
+#endif
 	for (UStaticMeshComponent *Sphere : GizmoSpheres)
 	{
 		if (Sphere)
@@ -960,9 +1036,16 @@ void UMetahumanFaceGizmoComponent::EnsureSphereCount(int32 Count)
 
 	while (GizmoSpheres.Num() < Count)
 	{
+		const bool bFirstSphere = (GizmoSpheres.Num() == 0);
 		UStaticMeshComponent *Sphere = NewObject<UStaticMeshComponent>(Owner, NAME_None, RF_Transactional);
 		Sphere->SetStaticMesh(CachedGizmoStaticMesh);
 		ApplyMetaHumanEditorStyleGizmoCollision(Sphere);
+		if (bFirstSphere)
+		{
+			UE_LOG(LogMetahumanGizmoRuntime, Log,
+				   TEXT("[MetahumanGizmo] Gizmo sphere collision | CollisionEnabled=QueryOnly | ObjectType=WorldDynamic | "
+						"Response: Block WorldStatic, Visibility, Camera; Ignore all other channels | OverlapEvents=false"));
+		}
 		Sphere->SetCastShadow(false);
 		if (FaceMeshComponent)
 		{
@@ -974,6 +1057,7 @@ void UMetahumanFaceGizmoComponent::EnsureSphereCount(int32 Count)
 		}
 		ApplyMetaHumanEditorStyleGizmoMaterial(Sphere);
 		Sphere->RegisterComponent();
+		Sphere->RecreatePhysicsState();
 		GizmoSpheres.Add(Sphere);
 	}
 
@@ -992,3 +1076,243 @@ void UMetahumanFaceGizmoComponent::EnsureSphereCount(int32 Count)
 		   Count,
 		   GizmoSpheres.Num());
 }
+
+#if WITH_METAHUMAN_GIZMO_RUNTIME_EVAL
+
+/** For MoveInteraction LMB logs: actor + component names and full object paths (not just class types). */
+static FString FormatHitObjectDetailsForLog(const FHitResult &Hit)
+{
+	if (!Hit.GetComponent())
+	{
+		return FString::Printf(TEXT("HitComponent=null | HitActor=%s"),
+							   Hit.GetActor() ? *Hit.GetActor()->GetPathName() : TEXT("(null)"));
+	}
+	UActorComponent *const C = Hit.GetComponent();
+	AActor *const A = Hit.GetActor();
+	return FString::Printf(
+		TEXT("HitActorName=%s | HitActorPath=%s | HitComponentName=%s | HitComponentClass=%s | HitComponentPath=%s | BoneName=%s"),
+		A ? *A->GetName() : TEXT("(null)"),
+		A ? *A->GetPathName() : TEXT("(null)"),
+		*C->GetName(),
+		*C->GetClass()->GetName(),
+		*C->GetPathName(),
+		*Hit.BoneName.ToString());
+}
+
+static bool IntersectRayPlane(const FVector &RayOrigin, const FVector &RayDir, const FVector &PlanePoint, const FVector &PlaneNormal, FVector &OutPoint)
+{
+	const float Denom = FVector::DotProduct(RayDir, PlaneNormal);
+	if (FMath::Abs(Denom) < KINDA_SMALL_NUMBER)
+	{
+		return false;
+	}
+	const float T = FVector::DotProduct(PlanePoint - RayOrigin, PlaneNormal) / Denom;
+	OutPoint = RayOrigin + RayDir * T;
+	return true;
+}
+
+void UMetahumanFaceGizmoComponent::SetGizmoSphereDragMaterialState(int32 GizmoIndex, bool bDragging)
+{
+	if (!GizmoSpheres.IsValidIndex(GizmoIndex) || !GizmoSpheres[GizmoIndex])
+	{
+		return;
+	}
+	UMaterialInstanceDynamic *const MID = Cast<UMaterialInstanceDynamic>(GizmoSpheres[GizmoIndex]->GetMaterial(0));
+	if (MID)
+	{
+		MID->SetScalarParameterValue(TEXT("Drag"), bDragging ? 1.f : 0.f);
+	}
+}
+
+void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
+{
+	(void)DeltaTime;
+	if (!ImplPtr)
+	{
+		return;
+	}
+	FMetahumanFaceGizmoComponentImpl *Impl = static_cast<FMetahumanFaceGizmoComponentImpl *>(ImplPtr);
+	if (!Impl->FaceState.IsValid())
+	{
+		return;
+	}
+
+	UWorld *const World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	APlayerController *PC = UGameplayStatics::GetPlayerController(World, MoveInteractionPlayerIndex);
+	if (!PC)
+	{
+		return;
+	}
+
+	const FTransform MeshXform = FaceMeshComponent ? FaceMeshComponent->GetComponentTransform()
+												   : (GetOwner() ? GetOwner()->GetActorTransform() : FTransform::Identity);
+
+	const bool bDown = PC->IsInputKeyDown(EKeys::LeftMouseButton);
+
+	if (MoveDragGizmoIndex != INDEX_NONE && !bDown)
+	{
+		const int32 EndedIndex = MoveDragGizmoIndex;
+		SetGizmoSphereDragMaterialState(MoveDragGizmoIndex, false);
+		if (bMoveAppliedThisDrag)
+		{
+			UE_LOG(LogMetahumanGizmoRuntime, Log,
+				   TEXT("[MetahumanGizmo] MoveInteraction | DRAG_END gizmo index=%d (LMB release) — session had successful SetGizmoPosition applies"),
+				   EndedIndex);
+		}
+		else
+		{
+			UE_LOG(LogMetahumanGizmoRuntime, Log,
+				   TEXT("[MetahumanGizmo] MoveInteraction | DRAG_END gizmo index=%d (LMB release) — no position apply (click only or zero delta)"),
+				   EndedIndex);
+		}
+		bMoveAppliedThisDrag = false;
+		OnGizmoDragEnd.Broadcast(EndedIndex);
+		MoveDragGizmoIndex = INDEX_NONE;
+		return;
+	}
+
+	if (bDown && MoveDragGizmoIndex == INDEX_NONE && PC->WasInputKeyJustPressed(EKeys::LeftMouseButton))
+	{
+		// Align with UMetaHumanCharacterEditorMeshEditingTool::HitTest: per-gizmo UStaticMeshComponent::LineTraceComponent only
+		// (no UWorld line trace — avoids floor/scene competition). bTraceComplex=false. Prefer closest hit by FHitResult::Distance.
+		FVector RayOrigin;
+		FVector RayDir;
+		if (!PC->DeprojectMousePositionToWorld(RayOrigin, RayDir))
+		{
+			UE_LOG(LogMetahumanGizmoRuntime, Log,
+				   TEXT("[MetahumanGizmo] MoveInteraction | LMB: DeprojectMousePositionToWorld failed (no pick ray)"));
+			return;
+		}
+		RayDir.Normalize();
+		const FVector RayEnd = RayOrigin + RayDir * HALF_WORLD_MAX;
+		const bool bTraceComplex = false;
+		FCollisionQueryParams PickParams(NAME_None, bTraceComplex);
+
+		int32 Idx = INDEX_NONE;
+		float BestDistance = -1.f;
+		FHitResult GizmoHit;
+		FHitResult PerSphereHit;
+		for (int32 I = 0; I < GizmoSpheres.Num(); ++I)
+		{
+			UStaticMeshComponent *const Sphere = GizmoSpheres[I];
+			if (!Sphere)
+			{
+				continue;
+			}
+			if (Sphere->LineTraceComponent(PerSphereHit, RayOrigin, RayEnd, PickParams))
+			{
+				if (Idx == INDEX_NONE || PerSphereHit.Distance < BestDistance)
+				{
+					Idx = I;
+					BestDistance = PerSphereHit.Distance;
+					GizmoHit = PerSphereHit;
+				}
+			}
+		}
+
+		if (Idx != INDEX_NONE)
+		{
+			MoveDragGizmoIndex = Idx;
+			bMoveAppliedThisDrag = false;
+			PC->GetMousePosition(LastMoveScreenX, LastMoveScreenY);
+			SetGizmoSphereDragMaterialState(Idx, true);
+			UE_LOG(LogMetahumanGizmoRuntime, Log,
+				   TEXT("[MetahumanGizmo] MoveInteraction | PICK gizmo index=%d (LMB LineTraceComponent per sphere, bTraceComplex=false, closestDist=%.4f, begin drag) | %s"),
+				   Idx,
+				   BestDistance,
+				   *FormatHitObjectDetailsForLog(GizmoHit));
+			OnGizmoDragBegin.Broadcast(Idx);
+		}
+		else
+		{
+			UE_LOG(LogMetahumanGizmoRuntime, Log,
+				   TEXT("[MetahumanGizmo] MoveInteraction | LMB: no gizmo hit (LineTraceComponent on %d spheres, bTraceComplex=false, HALF_WORLD_MAX ray — same strategy as Editor HitTest)"),
+				   GizmoSpheres.Num());
+		}
+		return;
+	}
+
+	if (bDown && MoveDragGizmoIndex != INDEX_NONE)
+	{
+		float X = 0.f;
+		float Y = 0.f;
+		PC->GetMousePosition(X, Y);
+
+		UStaticMeshComponent *const DragSphere = GizmoSpheres.IsValidIndex(MoveDragGizmoIndex) ? GizmoSpheres[MoveDragGizmoIndex] : nullptr;
+		const FVector GizmoWorld = DragSphere ? DragSphere->GetComponentLocation() : FVector::ZeroVector;
+
+		FRotator CamRot = PC->PlayerCameraManager ? PC->PlayerCameraManager->GetCameraRotation() : FRotator::ZeroRotator;
+		const FVector PlaneNormal = CamRot.Vector().GetSafeNormal();
+
+		FVector WorldDelta = FVector::ZeroVector;
+		FVector WorldOrigin = FVector::ZeroVector;
+		FVector WorldDir = FVector::ZeroVector;
+		if (UGameplayStatics::DeprojectScreenToWorld(PC, FVector2D(LastMoveScreenX, LastMoveScreenY), WorldOrigin, WorldDir))
+		{
+			WorldDir.Normalize();
+			FVector P0;
+			if (IntersectRayPlane(WorldOrigin, WorldDir, GizmoWorld, PlaneNormal, P0))
+			{
+				if (UGameplayStatics::DeprojectScreenToWorld(PC, FVector2D(X, Y), WorldOrigin, WorldDir))
+				{
+					WorldDir.Normalize();
+					FVector P1;
+					if (IntersectRayPlane(WorldOrigin, WorldDir, GizmoWorld, PlaneNormal, P1))
+					{
+						WorldDelta = (P1 - P0) * MoveInteractionSpeed;
+					}
+				}
+			}
+		}
+
+		LastMoveScreenX = X;
+		LastMoveScreenY = Y;
+
+		if (!WorldDelta.IsNearlyZero(UE_KINDA_SMALL_NUMBER))
+		{
+			FVector3f CurrentRig;
+			Impl->FaceState->GetGizmoPosition(MoveDragGizmoIndex, CurrentRig);
+			const FVector RigDelta = MeshXform.InverseTransformVector(WorldDelta);
+			const FVector3f NewRig = CurrentRig + FVector3f(static_cast<float>(RigDelta.X),
+															static_cast<float>(RigDelta.Y),
+															static_cast<float>(RigDelta.Z));
+			Impl->FaceState->SetGizmoPosition(MoveDragGizmoIndex, NewRig, bSymmetricMove, bEnforceGizmoBounds);
+			(void)RefreshGizmoTransforms();
+			const bool bFirstApplyThisDrag = !bMoveAppliedThisDrag;
+			bMoveAppliedThisDrag = true;
+			if (bFirstApplyThisDrag)
+			{
+				UE_LOG(LogMetahumanGizmoRuntime, Log,
+					   TEXT("[MetahumanGizmo] MoveInteraction | FIRST_APPLY gizmo index=%d (drag session will update rig; further frames: Verbose)"),
+					   MoveDragGizmoIndex);
+			}
+			UE_LOG(LogMetahumanGizmoRuntime, Verbose,
+				   TEXT("[MetahumanGizmo] MoveInteraction | APPLY gizmo index=%d | worldDelta=%s | rigDelta=%s | newRig=%s | symmetric=%s enforceBounds=%s speed=%.3f"),
+				   MoveDragGizmoIndex,
+				   *WorldDelta.ToString(),
+				   *RigDelta.ToString(),
+				   *FVector(NewRig).ToString(),
+				   bSymmetricMove ? TEXT("true") : TEXT("false"),
+				   bEnforceGizmoBounds ? TEXT("true") : TEXT("false"),
+				   MoveInteractionSpeed);
+			OnGizmoMoved.Broadcast(MoveDragGizmoIndex, FVector(NewRig));
+		}
+	}
+}
+
+#else
+
+void UMetahumanFaceGizmoComponent::SetGizmoSphereDragMaterialState(int32 GizmoIndex, bool bDragging)
+{
+}
+
+void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
+{
+}
+
+#endif

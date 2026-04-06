@@ -36,6 +36,7 @@ public class MetahumanGizmoRuntime : ModuleRules
 			"MetaHumanSDKRuntime",
 			"Projects",
 			"RigLogicModule",
+			"InputCore",
 		});
 	}
 }
