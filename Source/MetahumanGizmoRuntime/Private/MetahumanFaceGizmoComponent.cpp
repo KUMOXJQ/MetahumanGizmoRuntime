@@ -48,11 +48,8 @@
 #include "Editor.h"
 #include "MetaHumanCharacter.h"
 #include "MetaHumanCharacterEditorSubsystem.h"
-#include "Misc/DateTime.h"
-#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "GenericPlatform/GenericPlatformFile.h"
-#include "HAL/UnrealMemory.h"
 #endif
 
 // 输出日志中搜索：[MetahumanGizmo]
@@ -225,6 +222,11 @@ struct FMetahumanFaceGizmoComponentImpl
 	TSharedPtr<FMetaHumanCharacterIdentity::FState> FaceState;
 	/** Index into Evaluate().Vertices for GizmoAlignmentBoneName (Identity face DNA joint order == MHC joint columns). */
 	int32 CachedAlignmentJointIndexInEvaluateBuffer = INDEX_NONE;
+	/**
+	 * Snapshot of face state at LMB pick; passed to UMetaHumanCharacterEditorSubsystem::SetFaceGizmoPosition each drag frame
+	 * (LOD0-only path, same as official Face Move). Cleared on drag end.
+	 */
+	TSharedPtr<FMetaHumanCharacterIdentity::FState> DragBeginFaceState;
 };
 #else
 struct FMetahumanFaceGizmoComponentImpl
@@ -940,7 +942,7 @@ bool UMetahumanFaceGizmoComponent::RefreshGizmoTransforms()
 	}
 
 	// During LMB drag, optional freeze: reuse AlignmentDeltaWorld from the first refresh of this drag so bone/rig mismatch after
-	// ApplyFaceState does not oscillate the gizmo spheres every frame (see ProcessMoveInteraction push order).
+	// live mesh updates does not oscillate the gizmo spheres every frame (see ProcessMoveInteraction).
 	if (MoveDragGizmoIndex != INDEX_NONE && bFreezeGizmoAlignmentWhileDragging)
 	{
 		if (bDragAlignmentCacheValid)
@@ -1222,6 +1224,35 @@ void UMetahumanFaceGizmoComponent::SetGizmoSphereDragMaterialState(int32 GizmoIn
 	}
 }
 
+#if WITH_EDITOR
+/** After subsystem updates the edit face mesh, align FaceMeshComponent to Debug_GetFaceEditMesh (PIE / placed actors). */
+static void MetahumanGizmo_SyncFaceMeshComponentToSubsystem(
+	USkeletalMeshComponent *FaceMeshComp,
+	UMetaHumanCharacter *MHCharacter,
+	UMetaHumanCharacterEditorSubsystem *SubSys)
+{
+	if (!FaceMeshComp || !SubSys || !IsValid(MHCharacter))
+	{
+		return;
+	}
+	const USkeletalMesh *const EditMeshConst = SubSys->Debug_GetFaceEditMesh(MHCharacter);
+	USkeletalMesh *const EditMesh = const_cast<USkeletalMesh *>(EditMeshConst);
+	if (!EditMesh)
+	{
+		return;
+	}
+	if (FaceMeshComp->GetSkeletalMeshAsset() != EditMesh)
+	{
+		FaceMeshComp->SetSkeletalMeshAsset(EditMesh);
+		UE_LOG(LogMetahumanGizmoRuntime, Log,
+			   TEXT("[MetahumanGizmo] FaceMeshComponent now uses subsystem edit mesh '%s' (required for live deformation in PIE)."),
+			   *EditMesh->GetName());
+	}
+	FaceMeshComp->MarkRenderStateDirty();
+	FaceMeshComp->UpdateBounds();
+}
+#endif
+
 void UMetahumanFaceGizmoComponent::TryRegisterMetaHumanWithEditorSubsystem(bool bFromSetActiveOrExplicit)
 {
 #if WITH_EDITOR
@@ -1277,48 +1308,10 @@ void UMetahumanFaceGizmoComponent::TryPushFaceStateToEditorSubsystem()
 	}
 	const TSharedRef<const FMetaHumanCharacterIdentity::FState> StateCopy = MakeShared<FMetaHumanCharacterIdentity::FState>(*Impl->FaceState);
 	SubSys->ApplyFaceState(SourceMetaHumanCharacter, StateCopy);
-	UE_LOG(LogMetahumanGizmoRuntime, Verbose, TEXT("[MetahumanGizmo] ApplyFaceState pushed after gizmo edit (live face SKM update)."));
+	UE_LOG(LogMetahumanGizmoRuntime, Verbose, TEXT("[MetahumanGizmo] ApplyFaceState (full LODs + mesh description) from Impl FaceState."));
 
-	// #region agent log
-	{
-		const FSharedBuffer AssetBuf = SourceMetaHumanCharacter->GetFaceStateData();
-		FSharedBuffer EditBuf;
-		Impl->FaceState->Serialize(EditBuf);
-		const uint64 AssetSize = static_cast<uint64>(AssetBuf.GetSize());
-		const uint64 EditSize = static_cast<uint64>(EditBuf.GetSize());
-		const bool bContentMatch =
-			(AssetSize == EditSize) && (AssetSize == 0uLL || FMemory::Memcmp(AssetBuf.GetData(), EditBuf.GetData(), static_cast<SIZE_T>(AssetSize)) == 0);
-		const FString AgentDebugNdjsonPath = FPaths::Combine(FPaths::EnginePluginsDir(), TEXT("MetaHuman/debug-2cd2dd.log"));
-		const int64 Ts = FDateTime::UtcNow().ToUnixTimestamp() * 1000;
-		const FString Line = FString::Printf(
-			TEXT("{\"sessionId\":\"2cd2dd\",\"timestamp\":%lld,\"location\":\"MetahumanFaceGizmoComponent.cpp:TryPushFaceStateToEditorSubsystem\",\"message\":\"face_state_asset_vs_edit\",\"hypothesisId\":\"H1\",\"data\":{\"assetBytes\":%llu,\"editBytes\":%llu,\"contentMatch\":%s}}\n"),
-			Ts, AssetSize, EditSize, bContentMatch ? TEXT("true") : TEXT("false"));
-		FFileHelper::SaveStringToFile(Line, *AgentDebugNdjsonPath, FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get(), FILEWRITE_Append);
-	}
-	// #endregion
-
-	// ApplyFaceState updates CharacterData->FaceMesh in place; the editor preview path calls OnFaceMeshUpdated on actors in
-	// CharacterActorList (CreateMetaHumanCharacterEditorActor). PIE/placed characters are usually not in that list, and their
-	// FaceMeshComponent may still reference a different USkeletalMesh asset — sync to the subsystem edit mesh and refresh.
-	if (FaceMeshComponent)
-	{
-		// TNotNull<const USkeletalMesh*> converts implicitly to pointer (no .Get() in UE5.7).
-		const USkeletalMesh *const EditMeshConst = SubSys->Debug_GetFaceEditMesh(SourceMetaHumanCharacter);
-		USkeletalMesh *const EditMesh = const_cast<USkeletalMesh *>(EditMeshConst);
-		if (EditMesh)
-		{
-			// UE 5.1+: use GetSkeletalMeshAsset / SetSkeletalMeshAsset (GetSkeletalMesh removed from public API).
-			if (FaceMeshComponent->GetSkeletalMeshAsset() != EditMesh)
-			{
-				FaceMeshComponent->SetSkeletalMeshAsset(EditMesh);
-				UE_LOG(LogMetahumanGizmoRuntime, Log,
-					   TEXT("[MetahumanGizmo] FaceMeshComponent now uses subsystem edit mesh '%s' (required for live deformation in PIE)."),
-					   *EditMesh->GetName());
-			}
-			FaceMeshComponent->MarkRenderStateDirty();
-			FaceMeshComponent->UpdateBounds();
-		}
-	}
+	// ApplyFaceState updates CharacterData->FaceMesh in place; PIE/placed actors may need the same edit mesh on FaceMeshComponent.
+	MetahumanGizmo_SyncFaceMeshComponentToSubsystem(FaceMeshComponent, SourceMetaHumanCharacter, SubSys);
 #endif
 #endif
 }
@@ -1356,8 +1349,9 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 	if (MoveDragGizmoIndex != INDEX_NONE && !bDown)
 	{
 		const int32 EndedIndex = MoveDragGizmoIndex;
+		const bool bHadApplyThisDrag = bMoveAppliedThisDrag;
 		SetGizmoSphereDragMaterialState(MoveDragGizmoIndex, false);
-		if (bMoveAppliedThisDrag)
+		if (bHadApplyThisDrag)
 		{
 			UE_LOG(LogMetahumanGizmoRuntime, Log,
 				   TEXT("[MetahumanGizmo] MoveInteraction | DRAG_END gizmo index=%d (LMB release) — session had successful SetGizmoPosition applies"),
@@ -1369,20 +1363,16 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 				   TEXT("[MetahumanGizmo] MoveInteraction | DRAG_END gizmo index=%d (LMB release) — no position apply (click only or zero delta)"),
 				   EndedIndex);
 		}
+#if WITH_EDITOR
+		// One full ApplyFaceState (all LODs + mesh description) after drag, matching MetaHuman editor commit semantics.
+		if (bHadApplyThisDrag && bApplyLiveFaceMeshUpdates)
+		{
+			TryPushFaceStateToEditorSubsystem();
+		}
+#endif
 		bMoveAppliedThisDrag = false;
 		OnGizmoDragEnd.Broadcast(EndedIndex);
-#if WITH_EDITOR
-		// #region agent log
-		{
-			const FString AgentDebugNdjsonPath = FPaths::Combine(FPaths::EnginePluginsDir(), TEXT("MetaHuman/debug-2cd2dd.log"));
-			const int64 Ts = FDateTime::UtcNow().ToUnixTimestamp() * 1000;
-			const FString Line = FString::Printf(
-				TEXT("{\"sessionId\":\"2cd2dd\",\"timestamp\":%lld,\"location\":\"MetahumanFaceGizmoComponent.cpp:ProcessMoveInteraction\",\"message\":\"drag_end_no_commit\",\"hypothesisId\":\"H4\",\"data\":{\"gizmoIndex\":%d}}\n"),
-				Ts, EndedIndex);
-			FFileHelper::SaveStringToFile(Line, *AgentDebugNdjsonPath, FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get(), FILEWRITE_Append);
-		}
-		// #endregion
-#endif
+		Impl->DragBeginFaceState.Reset();
 		bMoveDragEditorBoundsValid = false;
 		MoveDragAccumulatedRigDelta = FVector3f::ZeroVector;
 		MoveDragGizmoIndex = INDEX_NONE;
@@ -1434,6 +1424,31 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 			MoveDragGizmoIndex = Idx;
 			bMoveAppliedThisDrag = false;
 			bDragAlignmentCacheValid = false;
+			// Begin-drag snapshot for SetFaceGizmoPosition (LOD0-only updates during drag; same as MHC Face Move tool).
+#if WITH_EDITOR
+			if (bApplyLiveFaceMeshUpdates && GEditor && IsValid(SourceMetaHumanCharacter))
+			{
+				if (UMetaHumanCharacterEditorSubsystem *const SubSysPick = GEditor->GetEditorSubsystem<UMetaHumanCharacterEditorSubsystem>())
+				{
+					if (SubSysPick->IsObjectAddedForEditing(SourceMetaHumanCharacter))
+					{
+						Impl->DragBeginFaceState = SubSysPick->CopyFaceState(SourceMetaHumanCharacter);
+					}
+					else
+					{
+						Impl->DragBeginFaceState = MakeShared<FMetaHumanCharacterIdentity::FState>(*Impl->FaceState);
+					}
+				}
+				else
+				{
+					Impl->DragBeginFaceState = MakeShared<FMetaHumanCharacterIdentity::FState>(*Impl->FaceState);
+				}
+			}
+			else
+#endif
+			{
+				Impl->DragBeginFaceState = MakeShared<FMetaHumanCharacterIdentity::FState>(*Impl->FaceState);
+			}
 			if (GizmoBoundsMode == EMetahumanGizmoBoundsMode::EditorStyleSoftBox)
 			{
 				Impl->FaceState->GetGizmoPosition(Idx, MoveDragBeginRig);
@@ -1535,15 +1550,48 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 					MoveDragMaxBounds,
 					BoundsSoftAmount);
 				NewRig = MoveDragBeginRig + ConstrainedOffset;
-				Impl->FaceState->SetGizmoPosition(MoveDragGizmoIndex, NewRig, bSymmetricMove, false);
 			}
 			else
 			{
 				NewRig = CurrentRig + RigDeltaF;
-				Impl->FaceState->SetGizmoPosition(MoveDragGizmoIndex, NewRig, bSymmetricMove, bEnforceGizmoBounds);
 			}
-			// Push face mesh first so bones/Evaluate align with deformed SKM before recomputing gizmo world positions.
-			TryPushFaceStateToEditorSubsystem();
+
+			bool bUsedSubsystemLod0Path = false;
+#if WITH_EDITOR
+			if (bApplyLiveFaceMeshUpdates && GEditor && IsValid(SourceMetaHumanCharacter) && Impl->DragBeginFaceState.IsValid())
+			{
+				if (UMetaHumanCharacterEditorSubsystem *const SubSysDrag = GEditor->GetEditorSubsystem<UMetaHumanCharacterEditorSubsystem>())
+				{
+					if (SubSysDrag->IsObjectAddedForEditing(SourceMetaHumanCharacter))
+					{
+						const bool bEnforceForSetFace =
+							(GizmoBoundsMode == EMetahumanGizmoBoundsMode::EditorStyleSoftBox) ? false : bEnforceGizmoBounds;
+						[[maybe_unused]] const TArray<FVector3f> UpdatedGizmoPositions = SubSysDrag->SetFaceGizmoPosition(
+							SourceMetaHumanCharacter,
+							Impl->DragBeginFaceState.ToSharedRef(),
+							MoveDragGizmoIndex,
+							NewRig,
+							bSymmetricMove,
+							bEnforceForSetFace);
+						Impl->FaceState = SubSysDrag->CopyFaceState(SourceMetaHumanCharacter);
+						MetahumanGizmo_SyncFaceMeshComponentToSubsystem(FaceMeshComponent, SourceMetaHumanCharacter, SubSysDrag);
+						bUsedSubsystemLod0Path = true;
+					}
+				}
+			}
+#endif
+			if (!bUsedSubsystemLod0Path)
+			{
+				if (GizmoBoundsMode == EMetahumanGizmoBoundsMode::EditorStyleSoftBox && bMoveDragEditorBoundsValid)
+				{
+					Impl->FaceState->SetGizmoPosition(MoveDragGizmoIndex, NewRig, bSymmetricMove, false);
+				}
+				else
+				{
+					Impl->FaceState->SetGizmoPosition(MoveDragGizmoIndex, NewRig, bSymmetricMove, bEnforceGizmoBounds);
+				}
+			}
+
 			(void)RefreshGizmoTransforms();
 			const bool bFirstApplyThisDrag = !bMoveAppliedThisDrag;
 			bMoveAppliedThisDrag = true;

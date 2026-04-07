@@ -16,6 +16,7 @@
 4. 可选：设置 **`SourceMetaHumanCharacter`**，从 `GetFaceStateData()` 反序列化面部状态以对齐已保存角色。
 5. 调用 **`InitializeIdentity`**（或在 **`bAutoInitializeOnBeginPlay`** 为 true 时自动调用），再按需 **`RefreshGizmoTransforms`**；若 **`bTickRefreshEveryFrame`** 为 true，则每帧刷新。更换 **`SourceMetaHumanCharacter`** 或面部 DNA 后须调用 **`ReinitializeIdentity`**（不可仅 Refresh）。
 6. **Move 拖拽限制（蓝图 / Details）**：**`Gizmo Bounds Mode`** — **Rig Native Enforce (A)** 使用 **`bEnforceGizmoBounds`** 传给 `FState::SetGizmoPosition`（与旧行为一致）；**Editor Soft Box (B)** 与 MetaHuman Character Editor Face Move 相同：`GetGizmoPositionBounds` + 软边界曲线，可调 **`BoundsBBoxReduction` / `BoundsExpandToCurrent` / `BoundsSoftAmount`**。
+7. **Editor/PIE 实时脸网格（`bApplyLiveFaceMeshUpdates`）**：若已对 **`SourceMetaHumanCharacter`** 调用 **`TryAddObjectToEdit`**，拖拽时每帧通过 **`UMetaHumanCharacterEditorSubsystem::SetFaceGizmoPosition`** 更新编辑用脸网格（与官方 Face Move 一致，默认仅 **LOD0**）；**松手后**再调用一次 **`ApplyFaceState`** 以刷新全部 LOD 与 mesh description。未注册到子系统时仅更新组件内 `FState`，不驱动子系统网格。
 
 ## Editor 与 Game 编译差异（重要）
 

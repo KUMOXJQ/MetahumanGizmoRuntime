@@ -177,21 +177,23 @@ public:
 
 	/**
 	 * While LMB-dragging a gizmo, keep world alignment (FacialRootBone / bounds delta) fixed to the value from the first refresh in that drag.
-	 * Reduces jitter from per-frame bone vs rig mismatch after ApplyFaceState. Cleared on drag end.
+	 * Reduces jitter from per-frame bone vs rig mismatch after live mesh updates. Cleared on drag end.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move")
 	bool bFreezeGizmoAlignmentWhileDragging = true;
 
 	/**
-	 * Editor / PIE only (WITH_EDITOR): after each gizmo move, call UMetaHumanCharacterEditorSubsystem::ApplyFaceState so the face skeletal mesh
-	 * vertices match FState::Evaluate (same pipeline as MetaHuman Character Editor Face Move). Requires SourceMetaHumanCharacter and successful TryAddObjectToEdit.
+	 * Editor / PIE only (WITH_EDITOR): live face skeletal mesh updates while moving gizmos.
+	 * When the character is registered with TryAddObjectToEdit: each drag frame uses UMetaHumanCharacterEditorSubsystem::SetFaceGizmoPosition
+	 * (same as official MHC Face Move — GetUpdateOptionForEditing, default LOD0 only). On LMB release after a successful apply, calls ApplyFaceState once
+	 * to refresh all LODs and mesh description. If not registered, only FState on this component updates (no subsystem mesh).
 	 * No effect in packaged game builds (Editor module not linked).
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move")
 	bool bApplyLiveFaceMeshUpdates = true;
 
 	/**
-	 * Editor / PIE only: on BeginPlay after init, call TryAddObjectToEdit(SourceMetaHumanCharacter) once so the editor subsystem owns face mesh + DNA maps for ApplyFaceState.
+	 * Editor / PIE only: on BeginPlay after init, call TryAddObjectToEdit(SourceMetaHumanCharacter) once so the editor subsystem owns face mesh + DNA maps for live updates.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "bApplyLiveFaceMeshUpdates"))
 	bool bAutoRegisterCharacterForEditorFaceUpdates = true;
@@ -284,7 +286,7 @@ private:
 	 * @param bFromSetActiveOrExplicit When true, skips bAutoRegisterCharacterForEditorFaceUpdates (used by SetActiveMetaHumanCharacter / RegisterSourceCharacterForEditorFaceUpdates).
 	 */
 	void TryRegisterMetaHumanWithEditorSubsystem(bool bFromSetActiveOrExplicit = false);
-	/** Editor/PIE: ApplyFaceState to refresh face SKM from current Impl FaceState (no-op in non-editor builds). */
+	/** Editor/PIE: ApplyFaceState (all LODs) from current Impl FaceState; used after drag end and for explicit full sync. No-op in non-editor builds. */
 	void TryPushFaceStateToEditorSubsystem();
 
 	/** Opaque impl (cpp-only); void* avoids UHT + incomplete TUniquePtr destructor issues. */
