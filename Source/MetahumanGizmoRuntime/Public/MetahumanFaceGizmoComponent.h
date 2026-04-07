@@ -31,6 +31,21 @@ enum class EMetahumanGizmoWorldAlignment : uint8
 	/** Legacy: translate so gizmo centroid matches mesh bounds origin (can be skewed by hair/collisions). */
 	MeshBoundsCentroid UMETA(DisplayName = "Mesh bounds center (legacy)"),
 };
+
+/**
+ * How rig-space gizmo translation is clamped during Move interaction (see ProcessMoveInteraction).
+ * A: FState::SetGizmoPosition native enforce (bEnforceGizmoBounds).
+ * B: Same as MetaHuman Character Editor Face Move — GetGizmoPositionBounds + soft box (FGizmoBoundaryConstraintFunctions-style).
+ */
+UENUM(BlueprintType)
+enum class EMetahumanGizmoBoundsMode : uint8
+{
+	/** Native MHC enforce flag on SetGizmoPosition (legacy; tune with bEnforceGizmoBounds). */
+	RigNativeEnforce UMETA(DisplayName = "Rig Native Enforce (A)"),
+	/** Editor Face Move style: AABB from GetGizmoPositionBounds + soft boundary curve. */
+	EditorStyleSoftBox UMETA(DisplayName = "Editor Soft Box (B)"),
+};
+
 class UMetaHumanCharacter;
 class USkeletalMeshComponent;
 
@@ -134,9 +149,31 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move")
 	bool bSymmetricMove = true;
 
-	/** Clamp to rig gizmo bounds (stricter; leave false for loose editing). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move")
+	/**
+	 * Gizmo translation limits: (A) native SetGizmoPosition enforce, or (B) editor-style AABB + soft bounds from GetGizmoPositionBounds.
+	 * Blueprint: switch between Rig Native Enforce (A) and Editor Soft Box (B).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (DisplayName = "Gizmo Bounds Mode"))
+	EMetahumanGizmoBoundsMode GizmoBoundsMode = EMetahumanGizmoBoundsMode::RigNativeEnforce;
+
+	/**
+	 * When Gizmo Bounds Mode is Rig Native Enforce (A): passed to FState::SetGizmoPosition as bInEnforceBounds.
+	 * Hidden when mode is Editor Soft Box (B); B uses outer soft-box math and calls SetGizmoPosition with enforce false.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "GizmoBoundsMode == 0", EditConditionHides))
 	bool bEnforceGizmoBounds = false;
+
+	/** B: shrink the AABB from GetGizmoPositionBounds (same default as MetaHumanCharacterEditor Face Move). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "GizmoBoundsMode == 1", EditConditionHides, ClampMin = "0.0", ClampMax = "1.0"))
+	float BoundsBBoxReduction = 0.2f;
+
+	/** B: expand bounds to include current gizmo position when sampling GetGizmoPositionBounds. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "GizmoBoundsMode == 1", EditConditionHides))
+	bool BoundsExpandToCurrent = true;
+
+	/** B: softness past the AABB (MetaHuman Face Move BBoxSoftBound). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "GizmoBoundsMode == 1", EditConditionHides, ClampMin = "0.001"))
+	float BoundsSoftAmount = 0.2f;
 
 	/**
 	 * While LMB-dragging a gizmo, keep world alignment (FacialRootBone / bounds delta) fixed to the value from the first refresh in that drag.
@@ -274,4 +311,12 @@ private:
 	bool bDragAlignmentCacheValid = false;
 	/** Snapshot of AlignmentDeltaWorld for the current drag; avoids per-frame FacialRootBone wobble while dragging. */
 	FVector CachedDragAlignmentDeltaWorld = FVector::ZeroVector;
+
+	/** Editor Soft Box (B): rig position at LMB pick; drag output is Begin + soft-clamped accumulated delta. */
+	FVector3f MoveDragBeginRig = FVector3f::ZeroVector;
+	/** B: sum of per-frame rig deltas since pick. */
+	FVector3f MoveDragAccumulatedRigDelta = FVector3f::ZeroVector;
+	FVector3f MoveDragMinBounds = FVector3f::ZeroVector;
+	FVector3f MoveDragMaxBounds = FVector3f::ZeroVector;
+	bool bMoveDragEditorBoundsValid = false;
 };

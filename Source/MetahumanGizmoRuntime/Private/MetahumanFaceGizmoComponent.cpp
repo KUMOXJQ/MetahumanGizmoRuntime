@@ -48,6 +48,11 @@
 #include "Editor.h"
 #include "MetaHumanCharacter.h"
 #include "MetaHumanCharacterEditorSubsystem.h"
+#include "Misc/DateTime.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "GenericPlatform/GenericPlatformFile.h"
+#include "HAL/UnrealMemory.h"
 #endif
 
 // 输出日志中搜索：[MetahumanGizmo]
@@ -190,6 +195,30 @@ static void ApplyMetaHumanEditorStyleGizmoCollision(UStaticMeshComponent *Sphere
 }
 
 #if WITH_METAHUMAN_GIZMO_RUNTIME_EVAL
+namespace
+{
+/**
+ * Mirrors FGizmoBoundaryConstraintFunctions::GizmoTranslationFunction (MetaHumanCharacterEditorFaceEditingTools.cpp).
+ * DeltaFromBegin is the proposed full offset from BeginDragGizmoPosition; return value is the constrained offset (soft box).
+ */
+static FVector3f ApplyEditorStyleGizmoTranslationConstraint(
+	const FVector3f& BeginDragGizmoPosition,
+	const FVector3f& DeltaFromBegin,
+	const FVector3f& MinGizmoPosition,
+	const FVector3f& MaxGizmoPosition,
+	float BBoxSoftBound)
+{
+	FVector3f NewPosition = BeginDragGizmoPosition + DeltaFromBegin;
+	const FVector3f NewBoundedPosition = NewPosition.BoundToBox(MinGizmoPosition, MaxGizmoPosition);
+	const FVector3f BoundDelta = NewPosition - NewBoundedPosition;
+	for (int32 k = 0; k < 3; ++k)
+	{
+		NewPosition[k] = NewBoundedPosition[k] + 2.0f / (1.0f + FMath::Exp(-2.0f * BoundDelta[k] * BBoxSoftBound)) - 1.0f;
+	}
+	return NewPosition - BeginDragGizmoPosition;
+}
+} // namespace
+
 struct FMetahumanFaceGizmoComponentImpl
 {
 	TUniquePtr<FMetaHumanCharacterIdentity> Identity;
@@ -1250,6 +1279,24 @@ void UMetahumanFaceGizmoComponent::TryPushFaceStateToEditorSubsystem()
 	SubSys->ApplyFaceState(SourceMetaHumanCharacter, StateCopy);
 	UE_LOG(LogMetahumanGizmoRuntime, Verbose, TEXT("[MetahumanGizmo] ApplyFaceState pushed after gizmo edit (live face SKM update)."));
 
+	// #region agent log
+	{
+		const FSharedBuffer AssetBuf = SourceMetaHumanCharacter->GetFaceStateData();
+		FSharedBuffer EditBuf;
+		Impl->FaceState->Serialize(EditBuf);
+		const uint64 AssetSize = static_cast<uint64>(AssetBuf.GetSize());
+		const uint64 EditSize = static_cast<uint64>(EditBuf.GetSize());
+		const bool bContentMatch =
+			(AssetSize == EditSize) && (AssetSize == 0uLL || FMemory::Memcmp(AssetBuf.GetData(), EditBuf.GetData(), static_cast<SIZE_T>(AssetSize)) == 0);
+		const FString AgentDebugNdjsonPath = FPaths::Combine(FPaths::EnginePluginsDir(), TEXT("MetaHuman/debug-2cd2dd.log"));
+		const int64 Ts = FDateTime::UtcNow().ToUnixTimestamp() * 1000;
+		const FString Line = FString::Printf(
+			TEXT("{\"sessionId\":\"2cd2dd\",\"timestamp\":%lld,\"location\":\"MetahumanFaceGizmoComponent.cpp:TryPushFaceStateToEditorSubsystem\",\"message\":\"face_state_asset_vs_edit\",\"hypothesisId\":\"H1\",\"data\":{\"assetBytes\":%llu,\"editBytes\":%llu,\"contentMatch\":%s}}\n"),
+			Ts, AssetSize, EditSize, bContentMatch ? TEXT("true") : TEXT("false"));
+		FFileHelper::SaveStringToFile(Line, *AgentDebugNdjsonPath, FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get(), FILEWRITE_Append);
+	}
+	// #endregion
+
 	// ApplyFaceState updates CharacterData->FaceMesh in place; the editor preview path calls OnFaceMeshUpdated on actors in
 	// CharacterActorList (CreateMetaHumanCharacterEditorActor). PIE/placed characters are usually not in that list, and their
 	// FaceMeshComponent may still reference a different USkeletalMesh asset — sync to the subsystem edit mesh and refresh.
@@ -1324,6 +1371,20 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 		}
 		bMoveAppliedThisDrag = false;
 		OnGizmoDragEnd.Broadcast(EndedIndex);
+#if WITH_EDITOR
+		// #region agent log
+		{
+			const FString AgentDebugNdjsonPath = FPaths::Combine(FPaths::EnginePluginsDir(), TEXT("MetaHuman/debug-2cd2dd.log"));
+			const int64 Ts = FDateTime::UtcNow().ToUnixTimestamp() * 1000;
+			const FString Line = FString::Printf(
+				TEXT("{\"sessionId\":\"2cd2dd\",\"timestamp\":%lld,\"location\":\"MetahumanFaceGizmoComponent.cpp:ProcessMoveInteraction\",\"message\":\"drag_end_no_commit\",\"hypothesisId\":\"H4\",\"data\":{\"gizmoIndex\":%d}}\n"),
+				Ts, EndedIndex);
+			FFileHelper::SaveStringToFile(Line, *AgentDebugNdjsonPath, FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get(), FILEWRITE_Append);
+		}
+		// #endregion
+#endif
+		bMoveDragEditorBoundsValid = false;
+		MoveDragAccumulatedRigDelta = FVector3f::ZeroVector;
 		MoveDragGizmoIndex = INDEX_NONE;
 		bDragAlignmentCacheValid = false;
 		return;
@@ -1373,6 +1434,17 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 			MoveDragGizmoIndex = Idx;
 			bMoveAppliedThisDrag = false;
 			bDragAlignmentCacheValid = false;
+			if (GizmoBoundsMode == EMetahumanGizmoBoundsMode::EditorStyleSoftBox)
+			{
+				Impl->FaceState->GetGizmoPosition(Idx, MoveDragBeginRig);
+				Impl->FaceState->GetGizmoPositionBounds(Idx, MoveDragMinBounds, MoveDragMaxBounds, BoundsBBoxReduction, BoundsExpandToCurrent);
+				MoveDragAccumulatedRigDelta = FVector3f::ZeroVector;
+				bMoveDragEditorBoundsValid = true;
+			}
+			else
+			{
+				bMoveDragEditorBoundsValid = false;
+			}
 			PC->GetMousePosition(LastMoveScreenX, LastMoveScreenY);
 			SetGizmoSphereDragMaterialState(Idx, true);
 			UE_LOG(LogMetahumanGizmoRuntime, Log,
@@ -1450,10 +1522,26 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 			FVector3f CurrentRig;
 			Impl->FaceState->GetGizmoPosition(MoveDragGizmoIndex, CurrentRig);
 			const FVector RigDelta = MeshXform.InverseTransformVector(WorldDelta);
-			const FVector3f NewRig = CurrentRig + FVector3f(static_cast<float>(RigDelta.X),
-															static_cast<float>(RigDelta.Y),
-															static_cast<float>(RigDelta.Z));
-			Impl->FaceState->SetGizmoPosition(MoveDragGizmoIndex, NewRig, bSymmetricMove, bEnforceGizmoBounds);
+			const FVector3f RigDeltaF(static_cast<float>(RigDelta.X), static_cast<float>(RigDelta.Y), static_cast<float>(RigDelta.Z));
+
+			FVector3f NewRig;
+			if (GizmoBoundsMode == EMetahumanGizmoBoundsMode::EditorStyleSoftBox && bMoveDragEditorBoundsValid)
+			{
+				MoveDragAccumulatedRigDelta += RigDeltaF;
+				const FVector3f ConstrainedOffset = ApplyEditorStyleGizmoTranslationConstraint(
+					MoveDragBeginRig,
+					MoveDragAccumulatedRigDelta,
+					MoveDragMinBounds,
+					MoveDragMaxBounds,
+					BoundsSoftAmount);
+				NewRig = MoveDragBeginRig + ConstrainedOffset;
+				Impl->FaceState->SetGizmoPosition(MoveDragGizmoIndex, NewRig, bSymmetricMove, false);
+			}
+			else
+			{
+				NewRig = CurrentRig + RigDeltaF;
+				Impl->FaceState->SetGizmoPosition(MoveDragGizmoIndex, NewRig, bSymmetricMove, bEnforceGizmoBounds);
+			}
 			// Push face mesh first so bones/Evaluate align with deformed SKM before recomputing gizmo world positions.
 			TryPushFaceStateToEditorSubsystem();
 			(void)RefreshGizmoTransforms();
@@ -1466,13 +1554,14 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 					   MoveDragGizmoIndex);
 			}
 			UE_LOG(LogMetahumanGizmoRuntime, Verbose,
-				   TEXT("[MetahumanGizmo] MoveInteraction | APPLY gizmo index=%d | worldDelta=%s | rigDelta=%s | newRig=%s | symmetric=%s enforceBounds=%s speed=%.3f"),
+				   TEXT("[MetahumanGizmo] MoveInteraction | APPLY gizmo index=%d | worldDelta=%s | rigDelta=%s | newRig=%s | symmetric=%s boundsMode=%d enforceBounds=%s speed=%.3f"),
 				   MoveDragGizmoIndex,
 				   *WorldDelta.ToString(),
 				   *RigDelta.ToString(),
 				   *FVector(NewRig).ToString(),
 				   bSymmetricMove ? TEXT("true") : TEXT("false"),
-				   bEnforceGizmoBounds ? TEXT("true") : TEXT("false"),
+				   static_cast<int32>(GizmoBoundsMode),
+				   (GizmoBoundsMode == EMetahumanGizmoBoundsMode::EditorStyleSoftBox) ? TEXT("n/a(B)") : (bEnforceGizmoBounds ? TEXT("true") : TEXT("false")),
 				   MoveInteractionSpeed);
 			OnGizmoMoved.Broadcast(MoveDragGizmoIndex, FVector(NewRig));
 		}

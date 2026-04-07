@@ -15,6 +15,7 @@
 3. 指定 **`FaceMeshComponent`**（脸部 `USkeletalMeshComponent`）；**`FaceDNAAsset`** 可选（未设则从脸 SKM 的 Asset User Data 解析 `UDNAAsset`，与编辑器 `GetDNAReader` 同源）。**`FaceMHCDataPath`** / **`BodyMHCDataPath`** 可与 Creator 一致的手填路径；若 **`bUsePluginDefaultMHCPaths`** 为 true，空字符串会自动填为 `MetaHumanCharacter` 插件 Content 下的 `Face/IdentityTemplate` 与 `Body/IdentityTemplate`。
 4. 可选：设置 **`SourceMetaHumanCharacter`**，从 `GetFaceStateData()` 反序列化面部状态以对齐已保存角色。
 5. 调用 **`InitializeIdentity`**（或在 **`bAutoInitializeOnBeginPlay`** 为 true 时自动调用），再按需 **`RefreshGizmoTransforms`**；若 **`bTickRefreshEveryFrame`** 为 true，则每帧刷新。更换 **`SourceMetaHumanCharacter`** 或面部 DNA 后须调用 **`ReinitializeIdentity`**（不可仅 Refresh）。
+6. **Move 拖拽限制（蓝图 / Details）**：**`Gizmo Bounds Mode`** — **Rig Native Enforce (A)** 使用 **`bEnforceGizmoBounds`** 传给 `FState::SetGizmoPosition`（与旧行为一致）；**Editor Soft Box (B)** 与 MetaHuman Character Editor Face Move 相同：`GetGizmoPositionBounds` + 软边界曲线，可调 **`BoundsBBoxReduction` / `BoundsExpandToCurrent` / `BoundsSoftAmount`**。
 
 ## Editor 与 Game 编译差异（重要）
 
