@@ -160,19 +160,19 @@ public:
 	 * When Gizmo Bounds Mode is Rig Native Enforce (A): passed to FState::SetGizmoPosition as bInEnforceBounds.
 	 * Hidden when mode is Editor Soft Box (B); B uses outer soft-box math and calls SetGizmoPosition with enforce false.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "GizmoBoundsMode == 0", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "GizmoBoundsMode == EMetahumanGizmoBoundsMode::RigNativeEnforce", EditConditionHides))
 	bool bEnforceGizmoBounds = false;
 
 	/** B: shrink the AABB from GetGizmoPositionBounds (same default as MetaHumanCharacterEditor Face Move). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "GizmoBoundsMode == 1", EditConditionHides, ClampMin = "0.0", ClampMax = "1.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "GizmoBoundsMode == EMetahumanGizmoBoundsMode::EditorStyleSoftBox", EditConditionHides, ClampMin = "0.0", ClampMax = "1.0"))
 	float BoundsBBoxReduction = 0.2f;
 
 	/** B: expand bounds to include current gizmo position when sampling GetGizmoPositionBounds. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "GizmoBoundsMode == 1", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "GizmoBoundsMode == EMetahumanGizmoBoundsMode::EditorStyleSoftBox", EditConditionHides))
 	bool BoundsExpandToCurrent = true;
 
 	/** B: softness past the AABB (MetaHuman Face Move BBoxSoftBound). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "GizmoBoundsMode == 1", EditConditionHides, ClampMin = "0.001"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "GizmoBoundsMode == EMetahumanGizmoBoundsMode::EditorStyleSoftBox", EditConditionHides, ClampMin = "0.001"))
 	float BoundsSoftAmount = 0.2f;
 
 	/**
@@ -197,6 +197,14 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "bApplyLiveFaceMeshUpdates"))
 	bool bAutoRegisterCharacterForEditorFaceUpdates = true;
+
+	/**
+	 * Editor / PIE only: when true (default), Play-In-Editor registers a transient DuplicateObject of SourceMetaHumanCharacter
+	 * with UMetaHumanCharacterEditorSubsystem so PIE gizmo edits do not share CharacterDataMap with the same asset opened in MetaHuman Character Editor.
+	 * Non-PIE editor worlds still register SourceMetaHumanCharacter directly. If DuplicateObject fails, live mesh updates are skipped for that session.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MetaHuman|Gizmo|Move", meta = (EditCondition = "bApplyLiveFaceMeshUpdates", EditConditionHides))
+	bool bIsolatePIEFromMetaHumanEditorSubsystem = true;
 
 	UPROPERTY(BlueprintAssignable, Category = "MetaHuman|Gizmo|Move")
 	FOnMetahumanGizmoDragBegin OnGizmoDragBegin;
@@ -225,6 +233,14 @@ public:
 	/** Lazily loaded from disk when bUsePluginArchetypeFaceDNAForIdentity is true; do not assign manually. */
 	UPROPERTY(Transient)
 	TObjectPtr<UDNAAsset> CachedArchetypeFaceDNAForIdentity = nullptr;
+
+	/** PIE-only: transient duplicate used as CharacterDataMap key when bIsolatePIEFromMetaHumanEditorSubsystem is true. Do not assign manually. */
+	UPROPERTY(Transient)
+	TObjectPtr<UMetaHumanCharacter> PIEEditorSubsystemBridgeCharacter = nullptr;
+
+	/** Tracks which SourceMetaHumanCharacter the bridge was duplicated from; used to recreate when the source reference changes. */
+	UPROPERTY(Transient)
+	TObjectPtr<UMetaHumanCharacter> PIEBridgeSourceCharacter = nullptr;
 
 	/** Initialize identity + state; call after paths/DNA are valid. Editor: full path. Game: returns false unless you use a source build that links MetaHumanCoreTechLib to game (non-standard). */
 	UFUNCTION(BlueprintCallable, Category = "MetaHuman|Gizmo")
@@ -288,6 +304,15 @@ private:
 	void TryRegisterMetaHumanWithEditorSubsystem(bool bFromSetActiveOrExplicit = false);
 	/** Editor/PIE: ApplyFaceState (all LODs) from current Impl FaceState; used after drag end and for explicit full sync. No-op in non-editor builds. */
 	void TryPushFaceStateToEditorSubsystem();
+
+	/** True when PIE + isolation flag + live mesh updates: subsystem uses a transient duplicate key. No-op in non-editor. */
+	bool ShouldUsePIEEditorSubsystemBridge() const;
+	/** Ensures PIEEditorSubsystemBridgeCharacter exists when isolated PIE path is active. No-op in non-editor. */
+	void EnsurePIEEditorSubsystemBridge();
+	/** Key for UMetaHumanCharacterEditorSubsystem: bridge in isolated PIE, else SourceMetaHumanCharacter; null if bridge failed. */
+	UMetaHumanCharacter* ResolveCharacterForEditorSubsystem();
+	/** RemoveObjectToEdit(bridge) and clear transient pointers. No-op in non-editor. */
+	void DestroyPIEEditorSubsystemBridge();
 
 	/** Opaque impl (cpp-only); void* avoids UHT + incomplete TUniquePtr destructor issues. */
 	void* ImplPtr = nullptr;

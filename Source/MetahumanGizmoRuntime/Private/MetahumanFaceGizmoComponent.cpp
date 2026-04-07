@@ -38,6 +38,8 @@
 #include "CollisionQueryParams.h"
 #include "EngineDefines.h"
 #include "Engine/World.h"
+#include "Engine/EngineTypes.h"
+#include "UObject/UObjectGlobals.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "HAL/PlatformFileManager.h"
 #include "Interfaces/IPluginManager.h"
@@ -559,6 +561,7 @@ void UMetahumanFaceGizmoComponent::BeginPlay()
 
 void UMetahumanFaceGizmoComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	DestroyPIEEditorSubsystemBridge();
 	ReleaseGizmoSpheres();
 	DeleteImpl(ImplPtr);
 	bIdentityInitialized = false;
@@ -1034,16 +1037,20 @@ bool UMetahumanFaceGizmoComponent::SetActiveMetaHumanCharacter(UMetaHumanCharact
 	SourceMetaHumanCharacter = NewCharacter;
 
 #if WITH_EDITOR
-	if (bUnregisterPreviousCharacterFromEditor && GEditor && IsValid(PreviousCharacter) && PreviousCharacter != NewCharacter)
+	if (IsValid(PreviousCharacter) && PreviousCharacter != NewCharacter)
 	{
-		if (UMetaHumanCharacterEditorSubsystem *const SubSys = GEditor->GetEditorSubsystem<UMetaHumanCharacterEditorSubsystem>())
+		DestroyPIEEditorSubsystemBridge();
+		if (bUnregisterPreviousCharacterFromEditor && GEditor)
 		{
-			if (SubSys->IsObjectAddedForEditing(PreviousCharacter))
+			if (UMetaHumanCharacterEditorSubsystem *const SubSys = GEditor->GetEditorSubsystem<UMetaHumanCharacterEditorSubsystem>())
 			{
-				SubSys->RemoveObjectToEdit(PreviousCharacter);
-				UE_LOG(LogMetahumanGizmoRuntime, Log,
-					   TEXT("[MetahumanGizmo] SetActiveMetaHumanCharacter: RemoveObjectToEdit('%s') before switching active character."),
-					   *PreviousCharacter->GetName());
+				if (SubSys->IsObjectAddedForEditing(PreviousCharacter))
+				{
+					SubSys->RemoveObjectToEdit(PreviousCharacter);
+					UE_LOG(LogMetahumanGizmoRuntime, Log,
+						   TEXT("[MetahumanGizmo] SetActiveMetaHumanCharacter: RemoveObjectToEdit('%s') before switching active character."),
+						   *PreviousCharacter->GetName());
+				}
 			}
 		}
 	}
@@ -1253,6 +1260,82 @@ static void MetahumanGizmo_SyncFaceMeshComponentToSubsystem(
 }
 #endif
 
+bool UMetahumanFaceGizmoComponent::ShouldUsePIEEditorSubsystemBridge() const
+{
+#if WITH_EDITOR
+	if (!bIsolatePIEFromMetaHumanEditorSubsystem || !bApplyLiveFaceMeshUpdates)
+	{
+		return false;
+	}
+	const UWorld *World = GetWorld();
+	return World && World->WorldType == EWorldType::PIE;
+#else
+	return false;
+#endif
+}
+
+void UMetahumanFaceGizmoComponent::EnsurePIEEditorSubsystemBridge()
+{
+#if WITH_EDITOR
+	if (!ShouldUsePIEEditorSubsystemBridge() || !IsValid(SourceMetaHumanCharacter))
+	{
+		return;
+	}
+	if (PIEEditorSubsystemBridgeCharacter && PIEBridgeSourceCharacter == SourceMetaHumanCharacter)
+	{
+		return;
+	}
+
+	DestroyPIEEditorSubsystemBridge();
+
+	UMetaHumanCharacter *const Dup = DuplicateObject<UMetaHumanCharacter>(SourceMetaHumanCharacter, GetTransientPackage());
+	if (!Dup)
+	{
+		UE_LOG(LogMetahumanGizmoRuntime, Error,
+			   TEXT("[MetahumanGizmo] DuplicateObject(SourceMetaHumanCharacter) failed — PIE subsystem bridge unavailable; live face mesh updates disabled for this session."));
+		return;
+	}
+	PIEEditorSubsystemBridgeCharacter = Dup;
+	PIEBridgeSourceCharacter = SourceMetaHumanCharacter;
+#endif
+}
+
+UMetaHumanCharacter *UMetahumanFaceGizmoComponent::ResolveCharacterForEditorSubsystem()
+{
+#if WITH_EDITOR
+	if (ShouldUsePIEEditorSubsystemBridge())
+	{
+		return IsValid(PIEEditorSubsystemBridgeCharacter) ? PIEEditorSubsystemBridgeCharacter.Get() : nullptr;
+	}
+#endif
+	return SourceMetaHumanCharacter;
+}
+
+void UMetahumanFaceGizmoComponent::DestroyPIEEditorSubsystemBridge()
+{
+#if WITH_EDITOR
+	if (!PIEEditorSubsystemBridgeCharacter)
+	{
+		PIEBridgeSourceCharacter = nullptr;
+		return;
+	}
+	if (GEditor)
+	{
+		if (UMetaHumanCharacterEditorSubsystem *const SubSys = GEditor->GetEditorSubsystem<UMetaHumanCharacterEditorSubsystem>())
+		{
+			if (SubSys->IsObjectAddedForEditing(PIEEditorSubsystemBridgeCharacter))
+			{
+				SubSys->RemoveObjectToEdit(PIEEditorSubsystemBridgeCharacter);
+				UE_LOG(LogMetahumanGizmoRuntime, Log,
+					   TEXT("[MetahumanGizmo] RemoveObjectToEdit(PIEEditorSubsystemBridgeCharacter) — subsystem bridge cleared."));
+			}
+		}
+	}
+	PIEEditorSubsystemBridgeCharacter = nullptr;
+	PIEBridgeSourceCharacter = nullptr;
+#endif
+}
+
 void UMetahumanFaceGizmoComponent::TryRegisterMetaHumanWithEditorSubsystem(bool bFromSetActiveOrExplicit)
 {
 #if WITH_EDITOR
@@ -1273,14 +1356,60 @@ void UMetahumanFaceGizmoComponent::TryRegisterMetaHumanWithEditorSubsystem(bool 
 	{
 		return;
 	}
-	if (SubSys->IsObjectAddedForEditing(SourceMetaHumanCharacter))
+
+	if (ShouldUsePIEEditorSubsystemBridge())
+	{
+		EnsurePIEEditorSubsystemBridge();
+	}
+
+	UMetaHumanCharacter *const CharForSubsystem = ResolveCharacterForEditorSubsystem();
+	if (!IsValid(CharForSubsystem))
+	{
+		UE_LOG(LogMetahumanGizmoRuntime, Warning,
+			   TEXT("[MetahumanGizmo] TryRegisterMetaHumanWithEditorSubsystem: no subsystem character key (PIE bridge missing after DuplicateObject?)."));
+		return;
+	}
+
+	if (SubSys->IsObjectAddedForEditing(CharForSubsystem))
 	{
 		return;
 	}
-	const bool bOk = SubSys->TryAddObjectToEdit(SourceMetaHumanCharacter);
+
+	// PIE 中冷启动 TryAddObjectToEdit 会走 CreateEditorDataForCharacter → GetFaceAndBodySkeletalMeshes → DNA+Interchange；
+	// Interchange 在 runtime 不可用，GetSkeletalMeshAssetFromDNA 可能返回 nullptr，随后 PopulateSkelMeshData(TNotNull) 会致命崩溃。
+	// 正确预热：在编辑器中打开 MetaHuman Character 资产（保持 MHC 打开），使 IsObjectAddedForEditing(Source) 为真；编辑器关卡（非 PIE）下可安全冷注册。
+	if (const UWorld *World = GetWorld(); World && World->WorldType == EWorldType::PIE)
+	{
+		DestroyPIEEditorSubsystemBridge();
+		UE_LOG(LogMetahumanGizmoRuntime, Warning,
+			   TEXT("[MetahumanGizmo] PIE: UMetaHumanCharacterEditorSubsystem has no CharacterData for this key yet — skipping TryAddObjectToEdit (would crash: Interchange SKM import is editor-only). ")
+			   TEXT("Open this character in MetaHuman Character Editor first and keep the asset tab open, then PIE; or use an editor viewport (non-PIE) for cold registration. Live subsystem face mesh updates are off for this session."));
+		return;
+	}
+
+	const bool bOk = SubSys->TryAddObjectToEdit(CharForSubsystem);
 	UE_LOG(LogMetahumanGizmoRuntime, Log,
-		   TEXT("[MetahumanGizmo] TryAddObjectToEdit(SourceMetaHumanCharacter) -> %s (live face mesh updates require this in Editor/PIE)."),
+		   TEXT("[MetahumanGizmo] TryAddObjectToEdit(%s) -> %s (live face mesh updates)."),
+		   ShouldUsePIEEditorSubsystemBridge() ? TEXT("PIE bridge duplicate") : TEXT("SourceMetaHumanCharacter"),
 		   bOk ? TEXT("OK") : TEXT("FAILED"));
+
+	if (!bOk && ShouldUsePIEEditorSubsystemBridge())
+	{
+		DestroyPIEEditorSubsystemBridge();
+	}
+
+#if WITH_METAHUMAN_GIZMO_RUNTIME_EVAL
+	if (bOk && ShouldUsePIEEditorSubsystemBridge() && ImplPtr)
+	{
+		FMetahumanFaceGizmoComponentImpl *const Impl = static_cast<FMetahumanFaceGizmoComponentImpl *>(ImplPtr);
+		if (Impl->FaceState.IsValid())
+		{
+			const TSharedRef<const FMetaHumanCharacterIdentity::FState> StateCopy = MakeShared<FMetaHumanCharacterIdentity::FState>(*Impl->FaceState);
+			SubSys->ApplyFaceState(CharForSubsystem, StateCopy);
+			MetahumanGizmo_SyncFaceMeshComponentToSubsystem(FaceMeshComponent, CharForSubsystem, SubSys);
+		}
+	}
+#endif
 #endif
 }
 
@@ -1301,17 +1430,22 @@ void UMetahumanFaceGizmoComponent::TryPushFaceStateToEditorSubsystem()
 	{
 		return;
 	}
+	UMetaHumanCharacter *const CharForSubsystem = ResolveCharacterForEditorSubsystem();
+	if (!IsValid(CharForSubsystem))
+	{
+		return;
+	}
 	UMetaHumanCharacterEditorSubsystem *const SubSys = GEditor->GetEditorSubsystem<UMetaHumanCharacterEditorSubsystem>();
-	if (!SubSys || !SubSys->IsObjectAddedForEditing(SourceMetaHumanCharacter))
+	if (!SubSys || !SubSys->IsObjectAddedForEditing(CharForSubsystem))
 	{
 		return;
 	}
 	const TSharedRef<const FMetaHumanCharacterIdentity::FState> StateCopy = MakeShared<FMetaHumanCharacterIdentity::FState>(*Impl->FaceState);
-	SubSys->ApplyFaceState(SourceMetaHumanCharacter, StateCopy);
+	SubSys->ApplyFaceState(CharForSubsystem, StateCopy);
 	UE_LOG(LogMetahumanGizmoRuntime, Verbose, TEXT("[MetahumanGizmo] ApplyFaceState (full LODs + mesh description) from Impl FaceState."));
 
 	// ApplyFaceState updates CharacterData->FaceMesh in place; PIE/placed actors may need the same edit mesh on FaceMeshComponent.
-	MetahumanGizmo_SyncFaceMeshComponentToSubsystem(FaceMeshComponent, SourceMetaHumanCharacter, SubSys);
+	MetahumanGizmo_SyncFaceMeshComponentToSubsystem(FaceMeshComponent, CharForSubsystem, SubSys);
 #endif
 #endif
 }
@@ -1428,11 +1562,18 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 #if WITH_EDITOR
 			if (bApplyLiveFaceMeshUpdates && GEditor && IsValid(SourceMetaHumanCharacter))
 			{
-				if (UMetaHumanCharacterEditorSubsystem *const SubSysPick = GEditor->GetEditorSubsystem<UMetaHumanCharacterEditorSubsystem>())
+				if (UMetaHumanCharacter *const CharPick = ResolveCharacterForEditorSubsystem())
 				{
-					if (SubSysPick->IsObjectAddedForEditing(SourceMetaHumanCharacter))
+					if (UMetaHumanCharacterEditorSubsystem *const SubSysPick = GEditor->GetEditorSubsystem<UMetaHumanCharacterEditorSubsystem>())
 					{
-						Impl->DragBeginFaceState = SubSysPick->CopyFaceState(SourceMetaHumanCharacter);
+						if (SubSysPick->IsObjectAddedForEditing(CharPick))
+						{
+							Impl->DragBeginFaceState = SubSysPick->CopyFaceState(CharPick);
+						}
+						else
+						{
+							Impl->DragBeginFaceState = MakeShared<FMetaHumanCharacterIdentity::FState>(*Impl->FaceState);
+						}
 					}
 					else
 					{
@@ -1560,22 +1701,25 @@ void UMetahumanFaceGizmoComponent::ProcessMoveInteraction(float DeltaTime)
 #if WITH_EDITOR
 			if (bApplyLiveFaceMeshUpdates && GEditor && IsValid(SourceMetaHumanCharacter) && Impl->DragBeginFaceState.IsValid())
 			{
-				if (UMetaHumanCharacterEditorSubsystem *const SubSysDrag = GEditor->GetEditorSubsystem<UMetaHumanCharacterEditorSubsystem>())
+				if (UMetaHumanCharacter *const CharDrag = ResolveCharacterForEditorSubsystem())
 				{
-					if (SubSysDrag->IsObjectAddedForEditing(SourceMetaHumanCharacter))
+					if (UMetaHumanCharacterEditorSubsystem *const SubSysDrag = GEditor->GetEditorSubsystem<UMetaHumanCharacterEditorSubsystem>())
 					{
-						const bool bEnforceForSetFace =
-							(GizmoBoundsMode == EMetahumanGizmoBoundsMode::EditorStyleSoftBox) ? false : bEnforceGizmoBounds;
-						[[maybe_unused]] const TArray<FVector3f> UpdatedGizmoPositions = SubSysDrag->SetFaceGizmoPosition(
-							SourceMetaHumanCharacter,
-							Impl->DragBeginFaceState.ToSharedRef(),
-							MoveDragGizmoIndex,
-							NewRig,
-							bSymmetricMove,
-							bEnforceForSetFace);
-						Impl->FaceState = SubSysDrag->CopyFaceState(SourceMetaHumanCharacter);
-						MetahumanGizmo_SyncFaceMeshComponentToSubsystem(FaceMeshComponent, SourceMetaHumanCharacter, SubSysDrag);
-						bUsedSubsystemLod0Path = true;
+						if (SubSysDrag->IsObjectAddedForEditing(CharDrag))
+						{
+							const bool bEnforceForSetFace =
+								(GizmoBoundsMode == EMetahumanGizmoBoundsMode::EditorStyleSoftBox) ? false : bEnforceGizmoBounds;
+							[[maybe_unused]] const TArray<FVector3f> UpdatedGizmoPositions = SubSysDrag->SetFaceGizmoPosition(
+								CharDrag,
+								Impl->DragBeginFaceState.ToSharedRef(),
+								MoveDragGizmoIndex,
+								NewRig,
+								bSymmetricMove,
+								bEnforceForSetFace);
+							Impl->FaceState = SubSysDrag->CopyFaceState(CharDrag);
+							MetahumanGizmo_SyncFaceMeshComponentToSubsystem(FaceMeshComponent, CharDrag, SubSysDrag);
+							bUsedSubsystemLod0Path = true;
+						}
 					}
 				}
 			}
